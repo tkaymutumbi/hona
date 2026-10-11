@@ -44,6 +44,7 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona reply <slug> <id> <text>` / `hona resolve <slug> <id>` | answer or close a thread (shows live in the page) |
 | `hona data <slug> <coll> [get <id>\|set <id> <json>\|del <id>]` | shared data the page can also use |
 | `hona lan [on\|off\|status]` | share on your network, protected by a secret token |
+| `hona skill [install\|status\|uninstall]` | link the agent skill into Claude Code, OpenCode and Codex |
 | `hona serve` | run the server in the foreground (it auto-starts otherwise) |
 
 - Pages live in `~/.local/share/hona/artifacts/<slug>/` (override with `HONA_HOME`).
@@ -86,10 +87,16 @@ token everything off this machine gets `401`. Loopback requests are protected ag
 
 ## For agents
 
-Tell your agent (e.g. in `AGENTS.md`):
+Install the skill once and Claude Code, OpenCode and Codex learn the whole loop (publish, wait for comments, read
+pins and screenshots, reply, republish):
 
-> Write plans, designs and reports as a self-contained HTML (or Markdown) file and run
-> `hona publish <file> --title "<name>"`. Give the user the printed link.
+```sh
+hona skill install     # symlinks skill/hona into ~/.claude/skills, ~/.agents/skills and ~/.codex/skills
+hona skill status      # check; `hona skill uninstall` removes the links
+```
+
+The skill is [`skill/hona/SKILL.md`](skill/hona/SKILL.md), a plain `SKILL.md`, so any agent that reads that format can
+use it. Restart the agent session after installing.
 
 Pages can opt into the [design system](DESIGN.md) with `<link rel="stylesheet" href="/_/hona.css">`
 and `<body class="h-page">`. Every page automatically gets the hona favicon unless it sets its own.

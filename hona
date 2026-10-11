@@ -440,6 +440,32 @@ def cmd_lan(args):
         row("url", cyan(lan_url() or "no network found")); row("access", dim("needs the ?t= token in the link; it becomes a cookie"))
     print(f"{dim('└')} {green('✔')} done")
 
+def cmd_skill(args):
+    """hona skill [install|status]: link the hona skill into Claude Code, OpenCode (via ~/.agents) and Codex."""
+    mode = args[0] if args else "status"
+    src = ASSETS.parent / "skill" / "hona"
+    targets = [("Claude Code", Path.home() / ".claude/skills"), ("OpenCode / agents", Path.home() / ".agents/skills"), ("Codex", Path.home() / ".codex/skills")]
+    if mode not in ("install", "status", "uninstall"): fail("usage: hona skill [install|status|uninstall]", "")
+    if not (src / "SKILL.md").is_file(): fail("skill source not found", f"Expected {src}/SKILL.md (is hona installed from a git clone?).")
+    banner(f"skill {mode}")
+    bad = 0
+    for i, (name, d) in enumerate(targets, 1):
+        link = d / "hona"; ok = link.is_symlink() and link.resolve() == src.resolve()
+        if mode == "install":
+            if link.exists() or link.is_symlink():
+                if ok: step(i, 3, name, note=f"already linked · {link}"); continue
+                if link.is_symlink(): link.unlink()
+                else: step(i, 3, name, ok=False, note=f"{link} exists and is not a link; left alone"); bad += 1; continue
+            d.mkdir(parents=True, exist_ok=True); link.symlink_to(src); step(i, 3, name, note=f"linked · {link}")
+        elif mode == "uninstall":
+            if ok: link.unlink(); step(i, 3, name, note="removed")
+            else: step(i, 3, name, ok=False, note="not installed by hona; left alone")
+        else:
+            step(i, 3, name, ok=ok, note=str(link) if ok else "not installed")
+    print(dim("│"))
+    if mode == "install": print(f"{dim('└')} {green('✔') if not bad else yellow('!')} done · restart your agent session to pick it up")
+    else: print(f"{dim('└')} {green('✔')} done")
+
 def cmd_serve(_):
     STORE.mkdir(parents=True, exist_ok=True)
     host = "0.0.0.0" if config().get("lan") else "127.0.0.1"
@@ -465,13 +491,14 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
 
   {bold('data')} <slug> <coll> [get <id>|set <id> <json>|del <id>]   shared data the page can also use (window.hona.db)
   {bold('lan')} [on|off|status]                                   share on your network (token protected)
+  {bold('skill')} [install|status|uninstall]                      teach Claude Code, OpenCode and Codex to use hona
   {bold('serve')}                                                 run server in foreground
 """
 
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
     cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
-            "reply": cmd_reply, "snap": cmd_snap, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
+            "reply": cmd_reply, "snap": cmd_snap, "skill": cmd_skill, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)
     cmds[a[0]](a[1:])
