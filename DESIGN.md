@@ -10,7 +10,7 @@ served at `/_/hona.css`.
 
 ## Mark
 
-`assets/favicon.svg` — an eye (hona = "see") in an ember rounded square. Served at `/_/favicon.svg` and injected into
+`assets/favicon.svg` — a ring and a dot in an ember circle: the "o" of hona as an eye (hona = "see"). Served at `/_/favicon.svg` and injected into
 every artifact that has no icon of its own.
 
 ## Tokens
