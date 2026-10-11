@@ -1,0 +1,94 @@
+/* hona design system — tokens + a few components. Load with <link rel="stylesheet" href="/_/hona.css">
+   Voice: calm, warm ink, one ember accent, monospace chrome, readable prose. */
+
+:root {
+  /* colour — light */
+  --h-bg: #faf7f2;
+  --h-surface: #ffffff;
+  --h-sunken: #f1ece4;
+  --h-text: #1a1512;
+  --h-muted: #6f655b;
+  --h-line: #e4ddd2;
+  --h-accent: #e8590c;
+  --h-accent-ink: #ffffff;
+  --h-ok: #2b8a3e;
+  --h-warn: #b7791f;
+  --h-err: #c92a2a;
+
+  /* type */
+  --h-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --h-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --h-text-sm: 0.8125rem;
+  --h-text-md: 1rem;
+  --h-text-lg: 1.25rem;
+  --h-text-xl: 1.75rem;
+  --h-text-2xl: 2.5rem;
+
+  /* space (4px base) */
+  --h-1: 0.25rem; --h-2: 0.5rem; --h-3: 0.75rem; --h-4: 1rem;
+  --h-6: 1.5rem; --h-8: 2rem; --h-12: 3rem;
+
+  /* shape */
+  --h-radius: 10px;
+  --h-radius-sm: 6px;
+  --h-measure: 46rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --h-bg: #141110;
+    --h-surface: #1c1816;
+    --h-sunken: #0f0d0c;
+    --h-text: #f3ece3;
+    --h-muted: #a1968a;
+    --h-line: #2e2823;
+    --h-accent: #ff7a3d;
+    --h-accent-ink: #1a1512;
+    --h-ok: #51cf66;
+    --h-warn: #fcc419;
+    --h-err: #ff6b6b;
+  }
+}
+:root[data-theme="dark"] {
+  --h-bg: #141110; --h-surface: #1c1816; --h-sunken: #0f0d0c; --h-text: #f3ece3;
+  --h-muted: #a1968a; --h-line: #2e2823; --h-accent: #ff7a3d; --h-accent-ink: #1a1512;
+  --h-ok: #51cf66; --h-warn: #fcc419; --h-err: #ff6b6b;
+}
+
+/* base */
+.h, .h-page { color-scheme: light dark; }
+.h-page {
+  margin: 0; padding: var(--h-12) var(--h-4);
+  background: var(--h-bg); color: var(--h-text);
+  font: var(--h-text-md)/1.65 var(--h-font);
+}
+.h-page > main, .h-wrap { max-width: var(--h-measure); margin: 0 auto; }
+.h-page h1, .h-page h2, .h-page h3 { line-height: 1.2; letter-spacing: -0.01em; }
+.h-page h1 { font-size: var(--h-text-2xl); margin: 0 0 var(--h-4); }
+.h-page h2 { font-size: var(--h-text-xl); margin: var(--h-8) 0 var(--h-3); }
+.h-page h3 { font-size: var(--h-text-lg); margin: var(--h-6) 0 var(--h-2); }
+.h-page a { color: var(--h-accent); }
+.h-page hr { border: 0; border-top: 1px solid var(--h-line); margin: var(--h-8) 0; }
+.h-page code, .h-page pre { font-family: var(--h-mono); font-size: 0.9em; }
+.h-page code { background: var(--h-sunken); padding: 0.1em 0.35em; border-radius: var(--h-radius-sm); }
+.h-page pre { background: var(--h-sunken); border: 1px solid var(--h-line); padding: var(--h-4); border-radius: var(--h-radius); overflow: auto; }
+.h-page pre code { background: none; padding: 0; }
+.h-page table { border-collapse: collapse; width: 100%; }
+.h-page th, .h-page td { border-bottom: 1px solid var(--h-line); padding: var(--h-2) var(--h-3); text-align: left; }
+.h-page th { font: 600 var(--h-text-sm)/1 var(--h-mono); color: var(--h-muted); text-transform: lowercase; }
+.h-page blockquote { margin: var(--h-4) 0; padding-left: var(--h-4); border-left: 3px solid var(--h-accent); color: var(--h-muted); }
+
+/* components */
+.h-eyebrow { font: var(--h-text-sm)/1 var(--h-mono); color: var(--h-muted); text-transform: lowercase; letter-spacing: 0.04em; }
+.h-card { background: var(--h-surface); border: 1px solid var(--h-line); border-radius: var(--h-radius); padding: var(--h-4) var(--h-6); }
+a.h-card { display: block; text-decoration: none; color: inherit; transition: border-color .15s, transform .15s; }
+a.h-card:hover { border-color: var(--h-accent); transform: translateY(-1px); }
+.h-badge { display: inline-block; font: 600 var(--h-text-sm)/1 var(--h-mono); padding: var(--h-1) var(--h-2); border-radius: 999px; background: var(--h-sunken); color: var(--h-muted); }
+.h-badge.ok { color: var(--h-ok); } .h-badge.warn { color: var(--h-warn); } .h-badge.err { color: var(--h-err); }
+.h-btn { display: inline-block; font: 600 var(--h-text-sm)/1 var(--h-mono); padding: var(--h-3) var(--h-4); border-radius: var(--h-radius-sm); background: var(--h-accent); color: var(--h-accent-ink); text-decoration: none; border: 0; cursor: pointer; }
+.h-btn.ghost { background: transparent; color: var(--h-text); border: 1px solid var(--h-line); }
+.h-stack > * + * { margin-top: var(--h-3); }
+
+/* brand header used by hona's own pages */
+.h-brand { display: flex; align-items: center; gap: var(--h-3); font: 700 var(--h-text-lg)/1 var(--h-mono); margin-bottom: var(--h-8); }
+.h-brand img { width: 32px; height: 32px; }
