@@ -76,6 +76,12 @@ def add_comment(slug, author, text, quote="", parent=None, anchor=None):
         if anchor: cm["anchor"] = anchor
         cs.append(cm); write_json(cfile(slug), cs)
     return cm
+def set_pinned(slug, cid, value):
+    with locked(cfile(slug)):
+        cs = get_comments(slug)
+        for x in cs:
+            if x["id"] == cid and not x["parent"]: x["pinned"] = value
+        write_json(cfile(slug), cs)
 def set_resolved(slug, cid, value):
     with locked(cfile(slug)):
         cs = get_comments(slug)
@@ -194,6 +200,8 @@ class H(BaseHTTPRequestHandler):
                 notify(f"hona · {meta(slug)['title']}", text); return self.js(cm)
             if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("resolve", "reopen"):
                 set_resolved(slug, int(rest[0]), rest[1] == "resolve"); return self.js({"ok": True})
+            if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("pin", "unpin"):
+                set_pinned(slug, int(rest[0]), rest[1] == "pin"); return self.js({"ok": True})
         if kind == "db" and rest and ID_RE.match(rest[0]):
             coll = rest[0]
             if method == "GET" and len(rest) == 1: return self.js([{"id": k, **v} if isinstance(v, dict) else {"id": k, "value": v} for k, v in db_read(slug, coll).items()])
@@ -261,6 +269,7 @@ def snap(slug, cid=None, out=None):
 
 def anchor_line(x):
     a = x.get("anchor") or {}
+    if a and x.get("pinned") is False: return "(unpinned by the user: marks hidden on the page)"
     if a.get("type") == "pin": return f'pin on {a.get("label", "?")}  [{a.get("selector", "")}] at ({int(a.get("x", 0))},{int(a.get("y", 0))})'
     if a.get("type") == "draw":
         kinds = ", ".join(sorted({s.get("tool", "?") for s in a.get("strokes", [])}))
@@ -269,7 +278,7 @@ def anchor_line(x):
         return f'drawing: {len(a.get("strokes", []))} mark(s) ({kinds}){box}'
     return ""
 
-def needs_shot(x): return (x.get("anchor") or {}).get("type") in ("pin", "draw")
+def needs_shot(x): return (x.get("anchor") or {}).get("type") in ("pin", "draw") and x.get("pinned") is not False
 
 # ── commands ────────────────────────────────────────────────────────────────
 def cmd_publish(args):

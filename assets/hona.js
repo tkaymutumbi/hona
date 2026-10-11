@@ -43,6 +43,7 @@
   try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
   let mode = null;                       // null | "pin" | "draw"
   let tmpPin = null, draft = [];         // marks not yet sent
+  let flashId = null;                    // comment whose mark is briefly emphasised (go to)
   const roots = () => comments.filter((c) => !c.parent);
   const anchorOf = (c) => c.anchor || (c.quote ? { type: "text", raw: c.quote, prefix: "", suffix: "" } : null);
 
@@ -127,12 +128,13 @@
     let svg = "", pins = "";
     if (marksOn || SNAP) for (const c of roots()) {
       if (only !== null && c.id !== only) continue;
-      const an = c.anchor, cls = c.resolved && only === null ? " done" : "";
+      if (c.pinned === false && c.id !== flashId) continue;
+      const an = c.anchor, cls = (c.resolved && only === null ? " done" : "") + (c.id === flashId ? " tmp" : "");
       if (c.resolved && SNAP && only === null) continue;
       if (an && an.type === "pin") { const [x, y] = pinPos(an); pins += `<div class="pin${cls}" data-t="${c.id}" style="left:${x}px;top:${y}px">${c.id}</div>`; }
       if (an && an.type === "draw" && an.strokes && an.strokes.length) {
         const k = sx / (an.vw || sx);
-        svg += `<g class="${cls.trim()}">${an.strokes.map((s) => strokeSvg(s, k)).join("")}</g>`;
+        svg += `<g class="${cls.replace(" tmp", "").trim()}">${an.strokes.map((s) => strokeSvg(s, k)).join("")}</g>`;
         const [px, py] = an.strokes[0].pts[0]; pins += `<div class="pin sq${cls}" data-t="${c.id}" style="left:${px * k}px;top:${py}px">${c.id}</div>`;
       }
     }
@@ -145,7 +147,7 @@
 
   // ── persistent text highlights (CSS Custom Highlight API; no DOM changes) ──
   const hs = document.createElement("style");
-  hs.textContent = "::highlight(hona){background:rgba(47,111,237,.3)}::highlight(hona-done){background:rgba(128,128,128,.18)}";
+  hs.textContent = "::highlight(hona){background:rgba(47,111,237,.3)}::highlight(hona-done){background:rgba(128,128,128,.18)}::highlight(hona-flash){background:rgba(245,159,0,.55)}";
   document.documentElement.appendChild(hs);
   let hlRanges = [];
   function renderHighlights() {
@@ -156,6 +158,7 @@
       const ix = textIndex();
       for (const c of roots()) {
         if (SNAP && SNAP !== "all" && c.id !== +SNAP) continue;
+        if (c.pinned === false) continue;
         const an = anchorOf(c); if (!an || an.type !== "text") continue;
         const r = locate(ix, an); if (!r) continue;
         hlRanges.push({ id: c.id, r }); (c.resolved ? done : act).push(r);
@@ -170,6 +173,17 @@
   });
 
   const renderAll = () => { renderMarks(); renderHighlights(); };
+  function goTo(id) {  // scroll to a pinned item and flash it, even if it is currently unpinned
+    const c = comments.find((x) => x.id === id), an = c && anchorOf(c); if (!an) return;
+    let y = null;
+    if (an.type === "pin") y = pinPos(an)[1];
+    else if (an.type === "draw") y = an.strokes[0].pts[0][1];
+    else { const r = locate(textIndex(), an); if (r) { y = scrollY + r.getBoundingClientRect().top;
+      if (window.CSS && CSS.highlights && window.Highlight) { CSS.highlights.set("hona-flash", new Highlight(r)); setTimeout(() => CSS.highlights.delete("hona-flash"), 1600); } } }
+    if (y === null) return;
+    scrollTo({ top: Math.max(0, y - innerHeight / 3), behavior: "smooth" });
+    flashId = id; renderMarks(); setTimeout(() => { flashId = null; renderMarks(); }, 1600);
+  }
   let rt = 0; const later = () => { clearTimeout(rt); rt = setTimeout(renderAll, 120); };
   addEventListener("resize", later); addEventListener("load", later);
   if (window.ResizeObserver) new ResizeObserver(later).observe(document.body);
@@ -197,6 +211,9 @@
     .p.open{display:flex}
     h4{margin:0;padding:12px 14px;border-bottom:1px solid var(--ln);font:700 13px ui-monospace,monospace;display:flex;justify-content:space-between;align-items:center;gap:8px}
     h4 .r{font-weight:400;color:var(--mu);display:flex;gap:10px;align-items:center}
+    .tabs{display:flex;gap:4px}
+    .tab{border:0;background:none;color:var(--mu);font:700 13px ui-monospace,monospace;padding:3px 10px;border-radius:999px;cursor:pointer}
+    .tab:hover{color:var(--tx)}.tab.on{background:var(--bl);color:var(--bi)}
     .l{overflow:auto;padding:10px 14px;display:flex;flex-direction:column;gap:12px;flex:1}
     .th{display:flex;flex-direction:column;gap:6px;border-radius:10px}.th.flash{outline:2px solid var(--bl);outline-offset:3px}
     .c{background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:8px 10px}
@@ -207,6 +224,7 @@
     .txt{white-space:pre-wrap;word-break:break-word}
     button.s{background:none;border:0;color:var(--mu);font:11px ui-monospace,monospace;cursor:pointer;padding:0}
     button.s:hover{color:var(--bl)}
+    .m button+button{margin-left:10px}
     form{border-top:1px solid var(--ln);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
     textarea{width:100%;resize:vertical;min-height:56px;background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:8px}
     textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
@@ -219,7 +237,7 @@
     .qp button:hover{background:var(--ln);color:var(--tx)}
     .empty{color:var(--mu);text-align:center;padding:20px 0}`, `
     <div class="p" id="p">
-      <h4><span>hona · comments</span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
+      <h4><span class="tabs"><button class="tab" id="tc" type="button">comments</button><button class="tab" id="tp" type="button">pinned</button></span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
       <div class="l" id="l"></div>
       <form id="f">
         <textarea id="x" placeholder="Comment for the agent… (Ctrl+Enter to send)"></textarea>
@@ -229,6 +247,7 @@
     <div class="wrap">
       <div class="dock">
         <button class="dk" id="dcm" type="button">comments <b id="dn"></b><kbd>Alt+C</kbd></button>
+        <button class="dk" id="dpd" type="button" title="See and unpin pinned comments">pinned <b id="dpn"></b></button>
         <button class="dk" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
         <button class="dk" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
       </div>
@@ -244,6 +263,23 @@
   const setQuote = (q) => { quote = q; $("chip").innerHTML = q ? `<span class="qp"><span>“${esc(q.slice(0, 60))}”</span><button type="button" id="qx" title="remove quote">✕</button></span>` : ""; };
   $("chip").addEventListener("click", (e) => { if (e.target.id === "qx") setQuote(""); });
 
+  let view = "comments";
+  const pinLabel = (c) => {
+    const a = anchorOf(c);
+    if (a.type === "pin") return `pin · ${esc(a.label || "")}`;
+    if (a.type === "draw") return `drawing · ${(a.strokes || []).length} mark${(a.strokes || []).length === 1 ? "" : "s"}`;
+    return `text · “${esc((c.quote || a.raw || "").slice(0, 50))}”`;
+  };
+  function renderPinned() {
+    const rs = roots().filter((c) => anchorOf(c));
+    $("l").innerHTML = rs.length ? rs.map((c) => `<div class="th ${c.resolved ? "done" : ""}" data-t="${c.id}"><div class="c">
+      <div class="m"><span>#${c.id} ${esc(c.author)} · ${new Date(c.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        <span><button class="s" data-g="${c.id}">go to</button> <button class="s" data-p="${c.id}">${c.pinned === false ? "re-pin" : "unpin"}</button></span></div>
+      <span class="kind" style="${c.pinned === false ? "background:var(--mu)" : ""}">${pinLabel(c)}</span>
+      <div class="txt">${esc(c.text.slice(0, 140))}${c.text.length > 140 ? "…" : ""}</div>
+      ${c.pinned === false ? `<div class="q">unpinned · marks hidden on the page</div>` : ""}</div></div>`).join("")
+      : `<div class="empty">Nothing pinned yet.<br>Use pin, draw, or comment on selected text.</div>`;
+  }
   const kindOf = (c) => {
     const a = c.anchor; if (!a) return "";
     if (a.type === "pin") return `<span class="kind">pin · ${esc(a.label || "")}</span>`;
@@ -252,8 +288,13 @@
   };
   function render() {
     const rs = roots(), open_ = rs.filter((c) => !c.resolved).length;
-    $("n").textContent = open_ || ""; $("dn").textContent = open_ || ""; $("st").textContent = comments.length ? `${open_} open` : "";
+    const pinned = rs.filter((c) => anchorOf(c) && c.pinned !== false).length;
+    $("n").textContent = open_ || ""; $("dn").textContent = open_ || ""; $("dpn").textContent = pinned || "";
+    $("st").textContent = view === "pinned" ? `${pinned} pinned` : comments.length ? `${open_} open` : "";
+    $("tc").classList.toggle("on", view === "comments"); $("tp").classList.toggle("on", view === "pinned");
+    $("f").style.display = view === "comments" ? "" : "none";
     $("mk").textContent = marksOn ? "marks on" : "marks off";
+    if (view === "pinned") return renderPinned();
     $("l").innerHTML = rs.length ? rs.map((r) => {
       const thread = [r, ...comments.filter((c) => c.parent === r.id)];
       return `<div class="th ${r.resolved ? "done" : ""}" data-t="${r.id}">` + thread.map((c, i) => `<div class="c ${c.author === "agent" ? "agent" : ""}">
@@ -263,11 +304,14 @@
     }).join("") : `<div class="empty">No comments yet.<br>Select text, or use pin / draw.</div>`;
   }
   focusThread = (id) => {
-    open(true); const el = $("l").querySelector(`[data-t="${id}"]`); if (!el) return;
+    view = "comments"; render(); open(true); const el = $("l").querySelector(`[data-t="${id}"]`); if (!el) return;
     el.scrollIntoView({ block: "nearest" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1300);
   };
   $("l").addEventListener("click", (e) => {
     const t = e.target;
+    if (t.dataset.g) goTo(+t.dataset.g);
+    if (t.dataset.p) { const c = comments.find((c) => c.id === +t.dataset.p);
+      api(`comments/${slug}/${c.id}/${c.pinned === false ? "pin" : "unpin"}`, { method: "POST", body: "{}" }).then(load); }
     if (t.dataset.r) { replyTo = +t.dataset.r; $("x").placeholder = "Reply…"; $("x").focus(); }
     if (t.dataset.v) { const c = comments.find((c) => c.id === +t.dataset.v);
       api(`comments/${slug}/${c.id}/${c.resolved ? "reopen" : "resolve"}`, { method: "POST", body: "{}" }).then(load); }
@@ -285,7 +329,10 @@
   $("x").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); });
   const tools = (v) => tEl.classList.toggle("tools", v ?? !tEl.classList.contains("tools"));
   $("fab").addEventListener("click", () => { if ($("p").classList.contains("open")) open(false); else tools(); });
-  $("dcm").addEventListener("click", () => { tools(false); open(true); });
+  const show = (v) => { view = v; render(); open(true); };
+  $("dcm").addEventListener("click", () => { tools(false); show("comments"); });
+  $("dpd").addEventListener("click", () => { tools(false); show("pinned"); });
+  $("tc").addEventListener("click", () => { view = "comments"; render(); }); $("tp").addEventListener("click", () => { view = "pinned"; render(); });
   document.addEventListener("mousedown", (e) => { if (!e.composedPath().includes(host)) tools(false); });
   const baseLoad = load;
   load = () => baseLoad().then(render);
@@ -439,7 +486,7 @@
     else if (e.code === "KeyM") { e.preventDefault(); toggle("draw"); }
     else if (e.code === "KeyC") {  // selection → popover at it; otherwise toggle the panel
       e.preventDefault(); const f = fromSelection();
-      if (f) compose(f.p, f.rect, "“" + f.p.quote.slice(0, 80) + "”"); else open();
+      if (f) compose(f.p, f.rect, "“" + f.p.quote.slice(0, 80) + "”"); else if ($("p").classList.contains("open")) open(false); else show("comments");
     }
   });
 

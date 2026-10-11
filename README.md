@@ -64,6 +64,7 @@ answers with `hona reply`, and republishes; your tab reloads on its own.
 | select text, **Alt+C** (or the blue pill) | comment on text; the text stays highlighted, click it to jump to the thread |
 | **Alt+P** (dock: `pin`) | click anywhere (images, mockups, diagrams) to drop a numbered pin |
 | **Alt+M** (dock: `draw`) | pen, arrow and box over the page, 3 colours, undo; **done** opens the comment box |
+| tools list → **pinned** | every pin, drawing and highlight in one list: **go to** scrolls and flashes it, **unpin** hides its marks (the comment stays), **re-pin** brings them back |
 | `Esc` | cancel the current mode or popover |
 
 Click the ring-and-dot button for the tools list (comments, pin, draw); click again, press Esc or click elsewhere to close it. Pins follow the element they were dropped on, text highlights re-find
