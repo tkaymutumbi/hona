@@ -15,7 +15,7 @@ PIDFILE = HOME / "server.pid"
 BASE = f"http://localhost:{PORT}"
 ASSETS = Path(os.path.realpath(__file__)).parent / "assets"
 ICON = '<link rel="icon" type="image/svg+xml" href="/_/favicon.svg">'
-RUNTIME = '<script src="/_/hona.js" defer></script>'
+RUNTIME = '<script src="/_/hona.js"></script>'
 WATCH_TTL = 4  # seconds: a tab that polled this recently counts as "already open"
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
@@ -111,11 +111,11 @@ def md_to_html(text, title):
     return PAGE_SHELL.replace("{{title}}", html.escape(title)).replace("{{body}}", body)
 
 def decorate(t):
-    if not re.search(r"""rel=["']?icon""", t):
-        if re.search(r"<head", t, re.I): t = re.sub(r"<head[^>]*>", lambda m: m.group(0) + ICON, t, 1, flags=re.I)
-        elif re.match(r"\s*<!doctype", t, re.I): t = re.sub(r"^(\s*<!doctype[^>]*>)", lambda m: m.group(1) + ICON, t, 1, flags=re.I)
-        else: t = ICON + t
-    return t.replace("</body>", RUNTIME + "</body>") if "</body>" in t else t + RUNTIME
+    """Add favicon (unless the page has one) and the hona runtime, ahead of the page's own scripts."""
+    pre = (RUNTIME if re.search(r"""rel=["']?icon""", t) else ICON + RUNTIME)
+    if re.search(r"<head", t, re.I): return re.sub(r"<head[^>]*>", lambda m: m.group(0) + pre, t, 1, flags=re.I)
+    if re.match(r"\s*<!doctype", t, re.I): return re.sub(r"^(\s*<!doctype[^>]*>)", lambda m: m.group(1) + pre, t, 1, flags=re.I)
+    return pre + t
 
 # ── server ──────────────────────────────────────────────────────────────────
 seen = {}  # slug -> last poll timestamp

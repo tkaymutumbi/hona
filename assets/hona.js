@@ -122,7 +122,7 @@
     @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512}}
     .pb{display:none;border:0;border-radius:999px;padding:6px 12px;background:var(--ac);color:var(--ai);font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 4px 14px #0004}
     .pop{display:none;width:320px;flex-direction:column;gap:8px;padding:10px;background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005}
-    .t.pill .pb{display:block}.t.pop .pop{display:flex}
+    .t.m-pill .pb{display:block}.t.m-pop .pop{display:flex}
     .q{display:inline-block;max-width:100%;padding:3px 10px;border-radius:999px;background:var(--sf);border:1px solid var(--ln);color:var(--mu);font:12px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:flex-start}
     textarea{width:100%;min-height:64px;resize:none;background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:8px}
     textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
@@ -130,7 +130,7 @@
     .hint{font:11px ui-monospace,monospace;color:var(--mu)}
     .go{background:var(--ac);color:var(--ai);border:0;border-radius:999px;padding:6px 14px;font:700 12px ui-monospace,monospace;cursor:pointer}
     .ok{display:none;padding:6px 12px;border-radius:999px;background:var(--tx);color:var(--bg);font:700 12px ui-monospace,monospace}
-    .t.done .ok{display:block}
+    .t.m-done .ok{display:block}
   </style>
   <div class="t">
     <button class="pb" id="pb" type="button">comment</button>
@@ -140,11 +140,11 @@
     <div class="ok" id="ok">✔ sent</div>
   </div>`;
   document.documentElement.appendChild(sel);
-  const st = sr.querySelector(".t"), mode = (m) => { st.className = "t " + (m || ""); sel.style.display = m ? "block" : "none"; };
+  const st = sr.querySelector(".t"), mode = (m) => { st.className = "t" + (m ? " m-" + m : ""); sel.style.display = m ? "block" : "none"; };
   let selQuote = "", anchor = null;
   function place() {  // keep the popover on screen, below the selection or above it
     if (!anchor) return;
-    const w = st.classList.contains("pop") ? 320 : 100, h = st.classList.contains("pop") ? 150 : 34;
+    const w = st.classList.contains("m-pop") ? 320 : 100, h = st.classList.contains("m-pop") ? 150 : 34;
     const left = Math.min(Math.max(anchor.left, 8), innerWidth - w - 8);
     const top = anchor.bottom + 8 + h > innerHeight ? anchor.top - h - 8 : anchor.bottom + 8;
     sel.style.left = scrollX + left + "px"; sel.style.top = scrollY + Math.max(top, 8) + "px";
@@ -153,13 +153,13 @@
     if (e.target === sel) return;
     setTimeout(() => {
       const s = getSelection(), t = s.toString().trim();
-      if (!t || s.rangeCount === 0) { if (!st.classList.contains("pop")) mode(""); return; }
+      if (!t || s.rangeCount === 0) { if (!st.classList.contains("m-pop")) mode(""); return; }
       const r = s.getRangeAt(0).getBoundingClientRect();
       anchor = { left: r.left, top: r.top, bottom: r.bottom }; selQuote = t.slice(0, 400);
       mode("pill"); place();
     }, 0);
   });
-  document.addEventListener("mousedown", (e) => { if (e.target !== sel && st.classList.contains("pop")) mode(""); });
+  document.addEventListener("mousedown", (e) => { if (e.target !== sel && st.classList.contains("m-pop")) mode(""); });
   const openPop = () => {
     sr.getElementById("pq").textContent = "“" + selQuote.slice(0, 80) + "”";
     mode("pop"); place(); sr.getElementById("px").focus();
