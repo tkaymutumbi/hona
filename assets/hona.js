@@ -171,6 +171,16 @@
     await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: selQuote }) });
     x.value = ""; mode("done"); place(); load(); getSelection().removeAllRanges(); setTimeout(() => mode(""), 1100);
   }
+  // Alt+C: with text selected → popover at the selection; otherwise toggle the comments panel
+  document.addEventListener("keydown", (e) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== "KeyC") return;
+    e.preventDefault();
+    const s = getSelection(), t = s.toString().trim();
+    if (t && s.rangeCount) {
+      const r = s.getRangeAt(0).getBoundingClientRect();
+      anchor = { left: r.left, top: r.top, bottom: r.bottom }; selQuote = t.slice(0, 400); openPop();
+    } else open();
+  });
   sr.getElementById("pf").addEventListener("submit", (e) => { e.preventDefault(); sendPop(); });
   sr.getElementById("px").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPop(); }
