@@ -52,6 +52,8 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona delete <slug> <id>` / `hona undelete` | soft-delete a comment thread |
 | `hona export <slug>` | one standalone HTML file with comments and marks |
 | `hona pin <slug>` / `hona unpin` / `hona trash [restore <name>\|empty]` | favourites on top; manage removed pages |
+| `hona check <slug>` | render at desktop and phone, light and dark; list overflow, errors, contrast |
+| `hona template` | print a starter page that already follows the design rules |
 | `hona mcp-install [status]` | register the MCP tools with Claude Code, OpenCode and Codex |
 | `hona mcp` | the MCP server itself (stdio; started by your agent) |
 | `hona serve` | run the server in the foreground (it auto-starts otherwise) |
@@ -114,6 +116,20 @@ MCP `hona_wait_for_feedback` / `hona_choices`). Clicking the picked option again
   `trash` section, `hona trash`). Nothing is deleted for good until you choose **delete forever** or `hona trash empty`.
 - **Screenshots follow your theme:** pins and drawings remember whether you were in light or dark mode; `hona snap --theme light|dark` overrides it.
 
+### Quality check
+
+`hona publish` finishes by rendering the page at desktop (1280px) and phone (390px) widths in light and dark, in headless
+Chromium, and lists what a reviewer would trip over: sideways scroll (and the widest element), console errors, failed
+loads, unreadable colours (WCAG contrast), tiny text, a missing title, viewport meta or page background. Issues are grouped
+by where they occur. The agent sees them in the publish result and fixes them before you look. `hona check <slug>` re-runs it;
+`--no-check` or `hona` config `check: false` turns it off. `hona template > page.html` gives a starter that passes.
+
+### Republish without losing your place
+
+When the agent republishes a page you have open, it reloads with your scroll position and any form values kept. The tools list
+also has a **theme** button (system, light, dark), remembered per browser. Pages can carry a one-line description
+(`hona publish --description`, or `<meta name="description">`) that shows under the title on the index.
+
 ### MCP
 
 `hona mcp-install` registers a stdio MCP server with Claude Code (user scope), OpenCode (`~/.config/opencode/opencode.json`,
@@ -121,7 +137,7 @@ backup kept) and Codex (`~/.codex/config.toml`). The agent then publishes and li
 drawing screenshots arrive as images it can look at:
 
 `hona_publish` · `hona_wait_for_feedback` · `hona_feedback` · `hona_reply` · `hona_resolve` · `hona_decision` ·
-`hona_list` · `hona_versions` · `hona_choices` · `hona_snapshot`
+`hona_list` · `hona_versions` · `hona_choices` · `hona_check` · `hona_snapshot`
 
 Manual config for any other MCP client: command `python3`, args `["/path/to/hona/hona", "mcp"]`.
 

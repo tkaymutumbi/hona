@@ -11,9 +11,9 @@
   --h-line: #e4ddd2;
   --h-accent: #e8590c;
   --h-accent-ink: #ffffff;
-  --h-ok: #2b8a3e;
-  --h-warn: #b7791f;
-  --h-err: #c92a2a;
+  --h-ok: #1f6f33;
+  --h-warn: #8a5a0b;
+  --h-err: #b02525;
 
   /* type */
   --h-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;

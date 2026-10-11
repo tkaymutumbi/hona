@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hona — local artifacts. Publish a page, get a link, open it in the browser,
 collect comments for the agent, keep a little shared data."""
-import difflib, fcntl, hashlib, html, json, mimetypes, os, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, time, urllib.request
+import concurrent.futures, difflib, fcntl, hashlib, html, json, mimetypes, os, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, time, urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -216,7 +216,7 @@ HEAD = ('<!doctype html><meta charset=utf-8><meta name=viewport content="width=d
 PAGE_SHELL = HEAD + '<title>{{title}}</title><body class="h-page"><main class="h-stack">{{body}}</main></body>'
 INDEX = (HEAD + '<title>hona</title><style>'
          '.pg{display:flex;justify-content:space-between;align-items:center;gap:12px}.pg-main{flex:1;min-width:0;color:inherit;text-decoration:none}'
-         '.h-page .pg-main{color:var(--h-text);text-decoration:none}.pg-main:hover strong{color:var(--h-accent)}.pg-side{display:flex;align-items:center;gap:6px;flex:none}'
+         '.pg-desc{color:var(--h-muted);font-size:14px;margin:2px 0 4px}.h-page .pg-main{color:var(--h-text);text-decoration:none}.pg-main:hover strong{color:var(--h-accent)}.pg-side{display:flex;align-items:center;gap:6px;flex:none}'
          '.pgb{border:1px solid var(--h-line);background:transparent;color:var(--h-muted);border-radius:999px;padding:4px 10px;font:600 12px/1 var(--h-mono);cursor:pointer}'
          '.pgb:hover{color:var(--h-text);border-color:var(--h-accent)}.pgb.rm:hover{color:var(--h-err);border-color:var(--h-err)}'
          '.pg.pinned{border-left:3px solid var(--h-accent)}.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--h-text);color:var(--h-bg);'
@@ -300,7 +300,7 @@ class H(BaseHTTPRequestHandler):
                     stale = d["version"] != n; cls = "ok" if d["decision"] == "approve" else "warn"
                     word = "approved" if d["decision"] == "approve" else "changes"; dv = d["version"]
                     return f'<span class="h-badge {cls}" style="{"opacity:.55" if stale else ""}">{word}{f" v{dv}" if stale else ""}</span>'
-                items = "".join(f'<div class="h-card pg{" pinned" if m.get("pinned") else ""}" data-slug="{m["slug"]}"><a class="pg-main" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · v{cur_version(m["slug"])} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a><div class="pg-side">{badge(m)}<button class="pgb" data-act="{"unpin" if m.get("pinned") else "pin"}">{"unpin" if m.get("pinned") else "pin"}</button><button class="pgb rm" data-act="remove">remove</button></div></div>' for m in ms)
+                items = "".join(f'<div class="h-card pg{" pinned" if m.get("pinned") else ""}" data-slug="{m["slug"]}"><a class="pg-main" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong>{f'<div class="pg-desc">{html.escape(m.get("description", ""))}</div>' if m.get("description") else ""}<div class="h-eyebrow">{m["slug"]} · v{cur_version(m["slug"])} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a><div class="pg-side">{badge(m)}<button class="pgb" data-act="{"unpin" if m.get("pinned") else "pin"}">{"unpin" if m.get("pinned") else "pin"}</button><button class="pgb rm" data-act="remove">remove</button></div></div>' for m in ms)
                 tr = trash_items()
                 trash_html = ('<details class="trash"><summary>trash (%d)</summary>' % len(tr) + "".join(f'<div class="tr"><span>{html.escape(t["title"])} <span class="h-eyebrow">{t["slug"]}</span></span><span class="pg-side"><button class="pgb" data-act="restore" data-name="{t["name"]}">restore</button><button class="pgb rm" data-act="purge" data-name="{t["name"]}">delete forever</button></span></div>' for t in tr) + "</details>") if tr else ""
                 return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{trash}}", trash_html).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
@@ -438,6 +438,48 @@ def snap(slug, cid=None, out=None, theme=None):
     except Exception: return None
     return out if out.exists() else None
 
+def run_check(slug):
+    """Render the page at desktop and phone width in light and dark, and report what a reviewer would trip over.
+    Returns {"ok": bool, "issues": [str], "notes": [str], "renders": n} or None if Chromium is missing."""
+    chrome = chrome_bin()
+    if not chrome: return None
+    ensure_server()
+    combos = [("desktop", 1280, 800, "light"), ("desktop", 1280, 800, "dark"), ("phone", 390, 800, "light"), ("phone", 390, 800, "dark")]
+    def one(c):
+        name, w, hh, theme = c
+        try:
+            out = subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", f"--window-size={w},{hh}",
+                                  f"--blink-settings=preferredColorScheme={0 if theme == 'dark' else 1}", "--virtual-time-budget=5000", "--dump-dom",
+                                  f"{BASE}/a/{slug}?hona_check=1"], capture_output=True, text=True, timeout=45).stdout
+            m = re.search(r'<pre id="hona-check">(.*?)</pre>', out, re.S)
+            return c, (json.loads(html.unescape(m.group(1))) if m else None)
+        except Exception: return c, None
+    with concurrent.futures.ThreadPoolExecutor(4) as ex: results = list(ex.map(one, combos))
+    found, ok = {}, 0                      # message -> [where, ...]
+    def add(msg, where):  # noqa: F811
+        w = found.setdefault(msg, [])
+        if where and where not in w: w.append(where)
+    for (name, w, _, theme), r in results:
+        if not r: continue
+        ok += 1; where = f"{name} {theme}"
+        for e in r["errors"]: add(f"console error: {e}", where)
+        for f in r["failed"]: add(f"failed to load: {f} (pages should be self-contained)", where)
+        if r.get("overflowBy"):
+            add(f"sideways scroll: page is wider than the screen" + (f"; widest: {'; '.join(r['overflow'])}" if r["overflow"] else ""), f"{name} {w}px")
+        for c in r["contrast"]: add(f"low contrast: {c}", where)
+        if r["tiny"]: add(f"tiny text: {r['tiny']} element(s) under 11px", where)
+        if name == "desktop" and theme == "light":
+            if not r["title"]: add("no <title>: the page needs a short name", None)
+            if not r["viewport"]: add('no viewport meta: add <meta name="viewport" content="width=device-width,initial-scale=1">', None)
+            if not r["bodyBg"]: add("no explicit page background: set one from a colour token so the page looks right in both themes", None)
+    issues = [m + (f"  [{'everywhere' if len(w) >= ok > 1 else ', '.join(w)}]" if w else "") for m, w in found.items()]
+    return {"ok": not issues and ok > 0, "issues": issues, "notes": [], "renders": ok}
+
+def check_lines(r):
+    if r is None: return ["check skipped: Chromium not found"]
+    if not r["renders"]: return ["check could not render the page"]
+    return [f"check passed ({r['renders']} renders: desktop and phone, light and dark)"] if r["ok"] else [f"check found {len(r['issues'])} issue(s) (desktop and phone, light and dark):"] + [f"  - {i}" for i in r["issues"]]
+
 def anchor_line(x):
     a = x.get("anchor") or {}
     if a and x.get("pinned") is False: return "(unpinned by the user: marks hidden on the page)"
@@ -464,7 +506,7 @@ def focus_window(titles):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return True
 
-def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False, no_focus=False, force_md=None):
+def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False, no_focus=False, force_md=None, description=None, check=None):
     if not title:
         m = re.search(r"<title>(.*?)</title>", raw, re.S | re.I) or re.search(r"^#\s+(.+)$", raw, re.M)
         title = html.unescape(m.group(1).strip()) if m else name
@@ -479,7 +521,8 @@ def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False,
     n, changed = commit_version(slug, page, title)
     old = meta(slug) or {}
     write_json(d / "meta.json", {"slug": slug, "title": title, "created": old.get("created", time.time()),
-                                 "updated": time.time() if (changed or not old) else old["updated"], "version": n, "pinned": bool(old.get("pinned"))})
+                                 "updated": time.time() if (changed or not old) else old["updated"], "version": n, "pinned": bool(old.get("pinned")),
+                                 "description": (description if description is not None else old.get("description") or (re.search(r"""<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)""", page, re.I) or [None, ""])[1])[:300]})
     started = ensure_server(); url = f"{BASE}/a/{slug}"
     try: already = json.load(urllib.request.urlopen(f"{BASE}/api/seen/{slug}", timeout=1))["open"]
     except Exception: already = False
@@ -490,7 +533,8 @@ def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False,
             tm = re.search(r"<title>(.*?)</title>", page, re.S | re.I)
             focused = focus_window([html.unescape(tm.group(1).strip()) if tm else "", title])
     dec = current_decision(slug)
-    return {"slug": slug, "title": title, "url": url, "version": n, "changed": changed, "existed": existed, "bytes": len(raw), "markdown": is_md,
+    chk = run_check(slug) if (config().get("check", True) if check is None else check) else False
+    return {"check": chk, "slug": slug, "title": title, "url": url, "version": n, "changed": changed, "existed": existed, "bytes": len(raw), "markdown": is_md,
             "server_started": started, "opened": opened, "reloaded": already, "focused": focused, "decision": dec,
             "decision_stale": bool(dec and dec["version"] != n), "open_comments": len([x for x in get_comments(slug) if not x["parent"] and not x["resolved"]])}
 
@@ -535,22 +579,24 @@ def decision_lines(d, version):
 
 # ── commands ────────────────────────────────────────────────────────────────
 def cmd_publish(args):
-    title = slug = None; no_open = no_focus = False; src = None; i = 0
+    title = slug = desc = None; no_open = no_focus = no_check = False; src = None; i = 0
     while i < len(args):
         a = args[i]
         if a in ("-t", "--title"): title = args[i + 1]; i += 2
+        elif a in ("-d", "--description"): desc = args[i + 1]; i += 2
+        elif a == "--no-check": no_check = True; i += 1
         elif a in ("-s", "--slug"): slug = args[i + 1]; i += 2
         elif a == "--no-open": no_open = True; i += 1
         elif a == "--no-focus": no_focus = True; i += 1
         else: src = a; i += 1
     banner("publish")
-    if src is None: fail("no file given", "Usage: hona publish <file.html|file.md|-> [--title T] [--slug S] [--no-open] [--no-focus]")
+    if src is None: fail("no file given", "Usage: hona publish <file.html|file.md|-> [--title T] [--slug S] [--no-open] [--no-focus] [--no-check] [--description D]")
     if src == "-": raw, name, srcp = sys.stdin.read(), "stdin", None
     else:
         p = Path(src)
         if not p.is_file(): fail(f"file not found: {src}", "Check the path, or pipe content with `hona publish -`.")
         raw, name, srcp = p.read_text(), p.stem, src
-    r = do_publish(raw, name, srcp, title, slug, no_open, no_focus)
+    r = do_publish(raw, name, srcp, title, slug, no_open, no_focus, None, desc, False if no_check else None)
     step(1, 3, "read page", note=f"{r['bytes']:,} bytes" + (" · markdown" if r["markdown"] else ""))
     step(2, 3, "stored", note=(f"v{r['version']} · " if r["changed"] else f"unchanged, still v{r['version']} · ") + ("updated in place · comments kept" if r["existed"] else "new"))
     step(3, 3, "serving", note="server started" if r["server_started"] else "server running")
@@ -560,6 +606,10 @@ def cmd_publish(args):
     row("browser", (green("opened") + (dim(" · focused") if r["focused"] else "")) if r["opened"] else (yellow("reloaded existing tab") if r["reloaded"] else dim("not opened")))
     d = r["decision"]
     if d: row("review", (yellow if d["decision"] == "changes" else green)(decision_label(d)) + dim(f" on v{d['version']}" + (f" · v{r['version']} not reviewed yet" if r["decision_stale"] else "")))
+    if r["check"] is not False:
+        cl = check_lines(r["check"])
+        row("check", (green if r["check"] and r["check"]["ok"] else yellow)(cl[0]))
+        for extra in cl[1:]: print(f"{dim('│')}            {extra}")
     if r["open_comments"]: row("comments", yellow(f"{r['open_comments']} open") + dim(f" · hona comments {r['slug']} --all"))
     sg = r["slug"]
     print(f"{dim('└')} {green('✔')} done · next: {bold(f'hona comments {sg} --wait')}")
@@ -658,6 +708,21 @@ def cmd_diff(args):
     if not ln: print(f"{dim('└')} {yellow('!')} no visible text changes (layout or styling only)"); return
     for x in ln: print(f"{dim('│')} " + (green if x["t"] == "+" else red)(x["t"] + " " + x["s"]))
     print(f"{dim('└')} {green('✔')} {sum(1 for x in ln if x['t'] == '+')} added, {sum(1 for x in ln if x['t'] == '-')} removed lines")
+
+def cmd_check(args):
+    """hona check <slug>: render the page at desktop and phone width in light and dark and list problems."""
+    slug = need_slug(args[0] if args else None); banner(f"check · {slug}")
+    if not chrome_bin(): fail("no Chromium found", "Install chromium or google-chrome so hona can render the page.")
+    r = run_check(slug); cl = check_lines(r)
+    if r and r["ok"]: print(f"{dim('└')} {green('✔')} {cl[0]}"); return
+    for ln in cl[:-1]: print(f"{dim('├')} {yellow('!') if ln == cl[0] else ' '} {ln.strip()}")
+    print(f"{dim('└')} {yellow('!') if len(cl) > 1 else red('✖')} {cl[-1].strip()}"); sys.exit(1 if r and r["renders"] else 2)
+
+def cmd_template(_):
+    """hona template > page.html: a starter page that already follows the design rules."""
+    t = ASSETS.parent / "skill" / "hona" / "template.html"
+    if not t.is_file(): fail("template not found", f"Expected {t}.")
+    sys.stdout.write(t.read_text())
 
 def cmd_focus(args):
     banner("focus"); cfg = config()
@@ -793,7 +858,9 @@ def mcp_tools():
         {"name": "hona_publish", "description": "Publish a self-contained HTML or Markdown page to the user's local browser and open it. Same title = update in place (comments are kept, a new version is recorded). Give the user the link, then call hona_wait_for_feedback.",
          "inputSchema": {**S(title={"type": "string", "description": "Short page name; also becomes the slug."}, html={"type": "string", "description": "Full self-contained HTML (inline CSS/JS) or Markdown text."},
                              file={"type": "string", "description": "Path to a .html or .md file, instead of html."}, markdown={"type": "boolean", "description": "Treat html as Markdown."},
-                             open={"type": "boolean", "description": "Open in the browser (default true). Use false for minor revisions."}), "required": ["title"]}},
+                             open={"type": "boolean", "description": "Open in the browser (default true). Use false for minor revisions."},
+                             description={"type": "string", "description": "One sentence shown under the title on the index."}, check={"type": "boolean", "description": "Render at desktop/phone and light/dark and report problems (default true)."}), "required": ["title"]}},
+        {"name": "hona_check", "description": "Render a published page at desktop and phone width in light and dark and list sideways scroll, console errors, failed loads, unreadable colours and missing basics. Fix what it reports and republish.", "inputSchema": S(slug=slug)},
         {"name": "hona_wait_for_feedback", "description": "Block until the user comments, pins, draws or approves/requests changes on a page, then return it. Pin and drawing comments come with a screenshot showing their marks: look at it. Returns 'no feedback yet' after the timeout; call again to keep waiting.",
          "inputSchema": S(slug=slug, timeout_seconds={"type": "integer", "description": "Default 120, max 570."})},
         {"name": "hona_feedback", "description": "Non-blocking: new comments and decisions since you last looked (all open threads with all=true).",
@@ -823,11 +890,12 @@ def mcp_call(name, a):
             if not p.is_file(): return text(f"file not found: {p}")
             raw, nm, src = p.read_text(), p.stem, str(p)
         else: return text("give either html or file")
-        r = do_publish(raw, nm, src, a["title"], None, a.get("open") is False, False, True if a.get("markdown") else None)
+        r = do_publish(raw, nm, src, a["title"], None, a.get("open") is False, False, True if a.get("markdown") else None, a.get("description"), None if a.get("check") is None else bool(a["check"]))
         out = [f"Published \"{r['title']}\" as v{r['version']}{'' if r['changed'] else ' (unchanged)'}: {r['url']}",
                f"browser: {'opened' if r['opened'] else 'reloaded existing tab' if r['reloaded'] else 'not opened'}", f"slug: {r['slug']}"]
         if r["decision"]: out += decision_lines(r["decision"], r["version"])
-        out.append("Tell the user the link, then call hona_wait_for_feedback.")
+        if r["check"] is not False: out += check_lines(r["check"])
+        out.append("Fix any check issues and republish before telling the user." if r["check"] and not r["check"]["ok"] else "Tell the user the link, then call hona_wait_for_feedback.")
         return text("\n".join(out))
     if name == "hona_wait_for_feedback" or name == "hona_feedback":
         slug = sl(); wait = name == "hona_wait_for_feedback"
@@ -848,6 +916,8 @@ def mcp_call(name, a):
             n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]]); d = current_decision(m["slug"])
             rows.append(f"{m['slug']}  v{cur_version(m['slug'])}  {m['title']}" + (f"  [{n} open]" if n else "") + (f"  [{decision_label(d).lower()} v{d['version']}]" if d else ""))
         return text("\n".join(rows) or "nothing published yet")
+    if name == "hona_check":
+        return text("\n".join(check_lines(run_check(sl()))))
     if name == "hona_choices":
         slug = sl(); cc = current_choices(slug); return text("\n".join(f"{g} = {e['value']}  (v{e['version']})" for g, e in cc.items()) or "no picks yet")
     if name == "hona_versions":
@@ -967,6 +1037,8 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
   {bold('choices')} <slug>                                        the user's picks on option blocks
   {bold('delete')} <slug> <id> · {bold('undelete')} <slug> <id>           soft-delete a comment thread (recoverable)
   {bold('export')} <slug> [--out f.html] [--no-comments]          one standalone file with comments and marks
+  {bold('check')} <slug>                                          render at desktop/phone, light/dark; list overflow, errors, contrast
+  {bold('template')} > page.html                                  a starter page that follows the design rules
   {bold('snap')} <slug> [id] [--out f.png] [--theme light|dark]                        screenshot with pins/drawings drawn on it
   {bold('reply')} <slug> <id> <text>                              answer a comment (shows live in the page)
   {bold('resolve')} <slug> <id>                                   mark a thread done
@@ -980,7 +1052,7 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
     cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
-            "reply": cmd_reply, "snap": cmd_snap, "pin": cmd_pin, "unpin": cmd_unpin, "trash": cmd_trash, "choices": cmd_choices, "delete": cmd_delete, "undelete": cmd_undelete, "export": cmd_export, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
+            "reply": cmd_reply, "snap": cmd_snap, "check": cmd_check, "template": cmd_template, "pin": cmd_pin, "unpin": cmd_unpin, "trash": cmd_trash, "choices": cmd_choices, "delete": cmd_delete, "undelete": cmd_undelete, "export": cmd_export, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
             "focus": cmd_focus, "_focus": cmd__focus, "mcp": cmd_mcp, "mcp-install": cmd_mcpinstall, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)

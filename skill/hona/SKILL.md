@@ -19,7 +19,7 @@ MCP tools or the CLI; they do the same thing.
 - **MCP tools, if you have them** (`hona_publish`, `hona_wait_for_feedback`, `hona_reply`, ...): use these. They return
   screenshots as images you can look at directly, and waiting is a single tool call. Tool list: `hona_publish`,
   `hona_wait_for_feedback`, `hona_feedback`, `hona_reply`, `hona_resolve`, `hona_decision`, `hona_list`,
-  `hona_versions`, `hona_choices`, `hona_snapshot`.
+  `hona_versions`, `hona_choices`, `hona_check`, `hona_snapshot`.
 - **CLI otherwise:** `command -v hona`. If missing, tell the user (install: https://github.com/tkaymutumbi/hona) and
   describe the result in the terminal instead. If the MCP tools are missing but the CLI exists, `hona mcp-install`
   registers them (restart the session to load them).
@@ -39,7 +39,7 @@ MCP tools or the CLI; they do the same thing.
    otherwise leave resolving to the user.
 
 Other commands: `hona export <slug>` (one standalone file with the comments baked in, for sharing), `hona list`, `hona open [slug]`, `hona rm <slug>`, `hona versions <slug>`, `hona diff <slug> [a] [b]`,
-`hona restore <slug> <n>`.
+`hona restore <slug> <n>`, `hona template`.
 
 ## Reading feedback correctly
 
@@ -75,16 +75,71 @@ When you want the user to pick between options (logos, layouts, plans), make eac
 
 ## Writing good pages
 
-- One page, one purpose; lead with the decision you need or the result.
-- **No emojis**, anywhere in the page, the title, or your replies on the thread. Use words, plain symbols, and the
-  design system's badges instead.
-- Link the design system for a consistent look: `<link rel="stylesheet" href="/_/hona.css">` and
-  `<body class="h-page"><main class="h-stack">...</main></body>`. Components: `.h-card`, `.h-badge` (`ok warn err`),
-  `.h-btn`, `.h-eyebrow`. Light and dark themes are automatic; do not hard-code colours that fight dark mode.
-- Every page gets the hona favicon and the comment, pin, draw and review tools automatically; do not add your own.
-- Make it work at phone width, and never rely on colour alone to carry meaning.
-- Keep a stable `<title>`: it becomes the slug, so a new title creates a new page instead of a new version.
+Start from `hona template > page.html`: it already follows everything below. Treat the page like a small product,
+not a text dump.
+
+**Before you publish**
+- `hona_publish` / `hona publish` renders the page at desktop and phone width in light and dark and reports sideways
+  scroll, console errors, failed loads, unreadable colours, tiny text and missing basics. Fix what it lists and
+  republish before telling the user. `hona check <slug>` / `hona_check` re-runs it. Do not skip it with `--no-check`
+  except for throwaway revisions.
+
+**Content and structure**
+- One page, one job. Lead with the decision you need or the result; put the evidence below it.
+- Ground it in the subject: real names, numbers, units, file paths and terms from the actual work. Never lorem ipsum,
+  never invented figures presented as real.
+- Complete at rest: everything meant to be read is visible on load, with no scroll-triggered reveal and no empty shell.
+- Structure encodes meaning: number steps only when the order matters; use eyebrows, dividers and badges only when they
+  carry information. Do not number or decorate for rhythm.
+- **No emojis**, anywhere: not in the page, the title, the description, or your replies on the thread. Use words, plain
+  symbols and the design system's badges.
+- Write plainly for the reader, in active voice, naming things the way they would. Prefer specific to clever. Avoid
+  mannered devices: asides set off by dashes, "not X but Y" framing, colon-then-reveal sentences, scare quotes around
+  invented labels, stock phrases.
+
+**Name it like a product**
+- `<title>` is the page's name: a short noun phrase, two to four words, specific enough to pick this page out of a list
+  ("Checkout Rollout Plan", not "Plan" or "Plan: how we will roll out checkout"). Use the user's own name for the thing
+  if they have one. Keep it stable: a new title makes a new page, the same title makes a new version.
+- Put the explanation in `description` (`--description`, or `<meta name="description">`): one sentence, shown under
+  the name on the index.
+
+**Design**
+- Link the design system: `<link rel="stylesheet" href="/_/hona.css">`, `<body class="h-page">`. Components: `.h-card`,
+  `.h-badge` (`ok warn err`), `.h-btn`, `.h-eyebrow`, `.h-option`, `.h-stack`. It carries light, dark and system themes.
+- Colours are tokens, defined once on `:root` (light), redefined under
+  `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {...} }` and `:root[data-theme="dark"] {...}`
+  with `color-scheme: dark`. The body gets an explicit background from a token. No literal colour that reads in only one
+  theme. The viewer can switch theme from the hona button, so both must work; give the dark theme its own care instead of
+  inverting.
+- Responsive: usable at 400px wide with no sideways page scroll. Side padding of at least 16px, flex and grid rows that
+  wrap, `min-width: 0` on children that hold text, and `overflow-x: auto` on a wrapper around any wide table, code block
+  or diagram.
+- Pair type deliberately and keep running text near 65 characters wide. Use `text-wrap: balance` on headings, a type
+  scale, and `font-variant-numeric: tabular-nums` where digits line up. Keep keyboard focus visible and respect
+  `prefers-reduced-motion`.
+- Repeated elements share edges, baselines and padding. Use cards sparingly: border, fill, radius and shadow mark an
+  element as a separate object, so apply them by role, not to every block.
+- Avoid the stock AI look unless the user asks for it: warm cream with a serif and terracotta accent, near-black with
+  one acid accent, purple-to-blue gradient heroes, Inter as the "safe" face, centred everything, rounded cards with
+  an accent rail. When the user specifies a direction, follow it exactly; their words win.
+- Self-contained: inline CSS and JS, data URIs for images. External hosts fail offline and in exports. Avoid
+  `alert`, `confirm` and `prompt`; build confirmations into the page.
+- Plan, memo and report pages get a restrained treatment (clear hierarchy, considered spacing); landing pages, games
+  and tools get a stronger point of view. When unsure, a well-composed plain page beats an over-designed one.
+
+**Diagrams** (inline `<svg>`, no libraries)
+- Draw a mechanism, not a labelled box: the path a request takes, the boundary being crossed, what one option adds or
+  removes. If a sentence says it faster, write the sentence.
+- Comparing options: draw the difference side by side, not a separate box per option.
+- Label every arrow (`writes`, `polls every 30s`). Use `viewBox` and `max-width: 100%`, `currentColor` for strokes and
+  text so both themes work, `<marker>` arrowheads, 11 to 13px labels, a shared grid. One figure makes one claim:
+  wrap it in `<figure>` with a `<figcaption>`, and give the svg `role="img"` and an `aria-label`.
+
+**Behaviour**
 - Pages can keep small shared state with `window.hona.db` (`list/get/set/del`; same data as `hona data <slug> <coll>`).
+- Republishing keeps the viewer's scroll position and form values, so you can iterate while they read.
+- Every page gets the hona favicon and the comment, pin, draw, review and theme tools automatically; do not add your own.
 
 ## Rules
 

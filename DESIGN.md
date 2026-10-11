@@ -23,7 +23,7 @@ every artifact that has no icon of its own.
 | `--h-text` / `--h-muted` | `#1a1512` / `#6f655b` | `#f3ece3` / `#a1968a` | text |
 | `--h-line` | `#e4ddd2` | `#2e2823` | borders |
 | `--h-accent` | `#e8590c` | `#ff7a3d` | the one accent |
-| `--h-ok` `--h-warn` `--h-err` | green / amber / red | lighter variants | status — always pair with a word or symbol |
+| `--h-ok` `--h-warn` `--h-err` | deep green / amber / red (4.5:1 on the sunken tint) | lighter variants | status — always pair with a word or symbol |
 
 Dark mode follows `prefers-color-scheme`; force with `data-theme="light|dark"` on `<html>`.
 

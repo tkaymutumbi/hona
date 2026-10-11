@@ -10,6 +10,45 @@
   const slug = STATIC ? STATIC.slug : location.pathname.split("/")[2];
   if (!slug) return;
   const SNAP = new URLSearchParams(location.search).get("hona_snap"); // headless screenshot: show marks only
+  const CHECK = new URLSearchParams(location.search).get("hona_check"); // headless quality check: collect problems, no UI
+  if (!SNAP && !CHECK) { try { const t = localStorage.getItem("hona-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {} }
+  if (CHECK) {
+    const errs = [], fails = [], skip = (u) => /^(\/api\/|\/_\/)/.test(u) || /\/(api|_)\//.test(String(u).slice(0, 40));
+    const oe = console.error; console.error = (...a) => { errs.push(a.map(String).join(" ").slice(0, 200)); oe.apply(console, a); };
+    addEventListener("error", (e) => {
+      const t = e.target;
+      if (t && t !== window && (t.src || t.href)) { const u = t.src || t.href; if (!skip(u)) fails.push(`${t.tagName.toLowerCase()} ${String(u).slice(0, 100)}`); }
+      else errs.push(`${e.message || "error"} (${String(e.filename || "").split("/").pop()}:${e.lineno})`);
+    }, true);
+    addEventListener("unhandledrejection", (e) => errs.push("unhandled rejection: " + String(e.reason).slice(0, 160)));
+    const of = window.fetch; window.fetch = (...a) => of(...a).then((r) => { if (!r.ok && !skip(String(a[0]))) fails.push(`fetch ${r.status} ${String(a[0]).slice(0, 100)}`); return r; }, (e) => { if (!skip(String(a[0]))) fails.push(`fetch failed ${String(a[0]).slice(0, 100)}`); throw e; });
+    const rgb = (c) => { const m = String(c).match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+    const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    const label = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.classList.length ? "." + [...el.classList].slice(0, 2).join(".") : "");
+    const bgOf = (el) => { for (let n = el; n; n = n.parentElement) { const c = rgb(getComputedStyle(n).backgroundColor); if (c && c[3] > 0.5) return c; } return matchMedia("(prefers-color-scheme: dark)").matches && /dark/.test(getComputedStyle(document.documentElement).colorScheme) ? [18, 18, 18, 1] : [255, 255, 255, 1]; };
+    const report = () => {
+      const de = document.documentElement, b = document.body, out = { w: innerWidth, dark: matchMedia("(prefers-color-scheme: dark)").matches, errors: errs.slice(0, 5), failed: fails.slice(0, 5), overflow: [], contrast: [], tiny: 0, title: !!document.title.trim(), viewport: !!document.querySelector('meta[name="viewport"]'), bodyBg: false };
+      if (Math.max(de.scrollWidth, b ? b.scrollWidth : 0) > innerWidth + 1) {
+        const inScroll = (el) => { for (let n = el.parentElement; n && n !== b; n = n.parentElement) { const o = getComputedStyle(n).overflowX; if (o === "auto" || o === "scroll" || o === "hidden") return true; } return false; };
+        out.overflowBy = Math.max(de.scrollWidth, b ? b.scrollWidth : 0) - innerWidth;
+        for (const el of b.querySelectorAll("*")) { const r = el.getBoundingClientRect(); if (r.width && r.right > innerWidth + 1 && !inScroll(el) && out.overflow.length < 3) out.overflow.push(`${label(el)} reaches ${Math.round(r.right)}px`); }
+      }
+      out.bodyBg = (rgb(getComputedStyle(b).backgroundColor) || [0, 0, 0, 0])[3] > 0.5 || (rgb(getComputedStyle(de).backgroundColor) || [0, 0, 0, 0])[3] > 0.5;
+      const seen = new Set();
+      for (const el of b.querySelectorAll("*")) {
+        if (![...el.childNodes].some((n) => n.nodeType === 3 && n.nodeValue.trim())) continue;
+        const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+        if (!r.width || !r.height || cs.visibility === "hidden" || cs.display === "none" || +cs.opacity === 0) continue;
+        const fs = parseFloat(cs.fontSize); if (fs < 11) out.tiny++;
+        const fg = rgb(cs.color), bg = bgOf(el); if (!fg) continue;
+        const need = fs >= 24 || (fs >= 18.66 && +cs.fontWeight >= 700) ? 3 : 4.5, got = ratio(fg, bg);
+        if (got < need && out.contrast.length < 5 && !seen.has(label(el))) { seen.add(label(el)); out.contrast.push(`${label(el)} ${got.toFixed(1)}:1 (needs ${need})`); }
+      }
+      const pre = document.createElement("pre"); pre.id = "hona-check"; pre.textContent = JSON.stringify(out); (document.body || document.documentElement).appendChild(pre);
+    };
+    addEventListener("load", () => setTimeout(report, 500));
+  }
   function staticApi(p, o = {}) {
     const [kind, , x, y] = p.split("/"), m = (o.method || "GET").toUpperCase(), ok = (v) => Promise.resolve(v);
     if (kind === "comments" && m === "GET") return ok(STATIC.comments);
@@ -41,6 +80,26 @@
     },
   };
 
+  // keep scroll position and form values across a republish reload
+  const SKEY = "hona-state:" + slug;
+  const fkey = (el) => el.id || (el.name ? el.name + (el.type === "radio" || el.type === "checkbox" ? "=" + el.value : "") : "");
+  function saveState() {
+    try {
+      const f = {};
+      document.querySelectorAll("input,textarea,select").forEach((el) => { const k = fkey(el); if (!k || el.type === "password" || el.type === "file") return; f[k] = el.type === "checkbox" || el.type === "radio" ? { c: el.checked } : { v: el.value }; });
+      sessionStorage.setItem(SKEY, JSON.stringify({ y: scrollY, f, t: Date.now() }));
+    } catch (e) {}
+  }
+  function restoreState() {
+    try {
+      const st = JSON.parse(sessionStorage.getItem(SKEY) || "null"); if (!st || Date.now() - st.t > 15000) return; sessionStorage.removeItem(SKEY);
+      const apply = () => {
+        document.querySelectorAll("input,textarea,select").forEach((el) => { const k = fkey(el), x = st.f[k]; if (!x) return; if ("c" in x) el.checked = x.c; else el.value = x.v; el.dispatchEvent(new Event("input", { bubbles: true })); });
+        scrollTo(0, st.y);
+      };
+      apply(); addEventListener("load", () => setTimeout(apply, 80));
+    } catch (e) {}
+  }
   // everything below needs document.body, so wait for it (window.hona above is available immediately)
   const boot = () => {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -66,6 +125,8 @@
     br.getElementById("rs").addEventListener("click", () => api(`restore/${slug}/${OLD[1]}`, { method: "POST", body: "{}" }).then(() => (location.href = `/a/${slug}`)));
     return;
   }
+  if (CHECK) return;
+  restoreState();
   let comments = [];
   let marksOn = true;
   try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
@@ -298,6 +359,7 @@
         <button class="dk xr" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
         <button class="dk xr" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
         <span class="dsep"></span>
+        <button class="dk" id="dtheme" type="button" title="Switch this page between system, light and dark">theme <kbd id="dtn">system</kbd></button>
         <button class="dk xr" id="dhist" type="button" title="Version history and diff">history <b id="dvn"></b></button>
       </div>
       <span class="dec" id="dec"></span>
@@ -578,6 +640,14 @@
     mode = m; dh.style.display = m === "draw" ? "block" : "none"; if (m === "draw") paintBar(); syncDock();
   }
   const toggle = (m) => setMode(mode === m ? null : m);
+  const paintTheme = () => { $("dtn").textContent = document.documentElement.dataset.theme || "system"; };
+  $("dtheme").addEventListener("click", () => {
+    const cur = document.documentElement.dataset.theme || "system", next = { system: "light", light: "dark", dark: "system" }[cur];
+    if (next === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = next;
+    try { next === "system" ? localStorage.removeItem("hona-theme") : localStorage.setItem("hona-theme", next); } catch (e) {}
+    paintTheme(); renderAll();
+  });
+  paintTheme();
   $("dpin").addEventListener("click", () => { tools(false); toggle("pin"); }); $("ddraw").addEventListener("click", () => { tools(false); toggle("draw"); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -619,7 +689,7 @@
   const tick = async () => {
     try {
       const j = await api(`poll/${slug}`);
-      if (v && j.v !== v) return location.reload();
+      if (v && j.v !== v) { saveState(); return location.reload(); }
       if (c !== null && j.c !== c) load();
       if (dv !== null && j.d !== dv) loadDecision();
       if (hv !== null && j.h !== hv) loadChoices();
