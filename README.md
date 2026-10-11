@@ -66,7 +66,7 @@ answers with `hona reply`, and republishes; your tab reloads on its own.
 | **Alt+M** (dock: `draw`) | pen, arrow and box over the page, 3 colours, undo; **done** opens the comment box |
 | `Esc` | cancel the current mode or popover |
 
-Hover the ring-and-dot button to see the dock. Pins follow the element they were dropped on, text highlights re-find
+Click the ring-and-dot button for the tools list (comments, pin, draw); click again, press Esc or click elsewhere to close it. Pins follow the element they were dropped on, text highlights re-find
 their quote after the page is republished, and **marks on/off** in the panel header hides everything.
 
 For the agent, `hona comments` prints where a pin or drawing is (element, selector, coordinates) and renders a

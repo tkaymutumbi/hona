@@ -186,9 +186,11 @@
     .fab svg{width:24px;height:24px}
     .n{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:var(--tx);color:var(--bg);font:700 11px/18px ui-monospace,monospace;text-align:center;padding:0 4px}
     .n:empty{display:none}
-    .dock{position:absolute;right:54px;bottom:6px;display:none;gap:6px;padding:0 8px 0 0}
-    .wrap:hover .dock,.t.open .dock{display:flex}
-    .dk{border:1px solid var(--ln);background:var(--bg);color:var(--tx);border-radius:999px;padding:6px 12px;font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 2px 10px #0003;white-space:nowrap}
+    .dock{position:absolute;right:0;bottom:54px;display:none;flex-direction:column;align-items:flex-end;gap:6px}
+    .t.tools .dock{display:flex}
+    .dk{display:flex;align-items:center;gap:10px;border:1px solid var(--ln);background:var(--bg);color:var(--tx);border-radius:999px;padding:7px 14px;font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 2px 10px #0003;white-space:nowrap}
+    .dk kbd{font:11px ui-monospace,monospace;color:var(--mu);font-weight:400}.dk.on kbd{color:inherit;opacity:.8}
+    .dk b{background:var(--tx);color:var(--bg);border-radius:9px;min-width:18px;padding:0 5px;font:700 11px/18px ui-monospace,monospace;text-align:center}.dk b:empty{display:none}
     .dk:hover{border-color:var(--bl)}.dk.on{background:var(--bl);color:var(--bi);border-color:var(--bl)}
     .p{position:fixed;right:16px;bottom:72px;width:360px;max-width:calc(100vw - 32px);max-height:70vh;display:none;flex-direction:column;
        background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005;overflow:hidden}
@@ -225,7 +227,11 @@
       </form>
     </div>
     <div class="wrap">
-      <div class="dock"><button class="dk" id="dpin" type="button" title="Drop a pin (Alt+P)">pin</button><button class="dk" id="ddraw" type="button" title="Draw on the page (Alt+M)">draw</button></div>
+      <div class="dock">
+        <button class="dk" id="dcm" type="button">comments <b id="dn"></b><kbd>Alt+C</kbd></button>
+        <button class="dk" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
+        <button class="dk" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
+      </div>
       <button class="fab" id="fab" title="hona comments">
         <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="17" fill="none" stroke="#1a1512" stroke-width="6"/><circle cx="32" cy="32" r="6.5" fill="#1a1512"/></svg>
         <span class="n" id="n"></span>
@@ -246,7 +252,7 @@
   };
   function render() {
     const rs = roots(), open_ = rs.filter((c) => !c.resolved).length;
-    $("n").textContent = open_ || ""; $("st").textContent = comments.length ? `${open_} open` : "";
+    $("n").textContent = open_ || ""; $("dn").textContent = open_ || ""; $("st").textContent = comments.length ? `${open_} open` : "";
     $("mk").textContent = marksOn ? "marks on" : "marks off";
     $("l").innerHTML = rs.length ? rs.map((r) => {
       const thread = [r, ...comments.filter((c) => c.parent === r.id)];
@@ -277,7 +283,10 @@
   }
   $("f").addEventListener("submit", (e) => { e.preventDefault(); send(); });
   $("x").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); });
-  $("fab").addEventListener("click", () => open());
+  const tools = (v) => tEl.classList.toggle("tools", v ?? !tEl.classList.contains("tools"));
+  $("fab").addEventListener("click", () => { if ($("p").classList.contains("open")) open(false); else tools(); });
+  $("dcm").addEventListener("click", () => { tools(false); open(true); });
+  document.addEventListener("mousedown", (e) => { if (!e.composedPath().includes(host)) tools(false); });
   const baseLoad = load;
   load = () => baseLoad().then(render);
 
@@ -418,9 +427,13 @@
     mode = m; dh.style.display = m === "draw" ? "block" : "none"; if (m === "draw") paintBar(); syncDock();
   }
   const toggle = (m) => setMode(mode === m ? null : m);
-  $("dpin").addEventListener("click", () => toggle("pin")); $("ddraw").addEventListener("click", () => toggle("draw"));
+  $("dpin").addEventListener("click", () => { tools(false); toggle("pin"); }); $("ddraw").addEventListener("click", () => { tools(false); toggle("draw"); });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && (mode || composing())) { finish(); setMode(null); return; }
+    if (e.key === "Escape") {
+      if (mode || composing()) { finish(); setMode(null); tools(false); return; }
+      if (tEl.classList.contains("tools")) { tools(false); return; }
+      if ($("p").classList.contains("open")) { open(false); return; }
+    }
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.code === "KeyP") { e.preventDefault(); toggle("pin"); }
     else if (e.code === "KeyM") { e.preventDefault(); toggle("draw"); }
