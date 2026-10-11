@@ -51,7 +51,11 @@
     textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
     .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
     .go{background:var(--ac);color:var(--ai);border:0;border-radius:6px;padding:7px 12px;font:700 12px ui-monospace,monospace;cursor:pointer}
-    .chip{font-size:12px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+    .chip{flex:1;min-width:0}
+    .qp{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 4px 3px 10px;border-radius:999px;background:var(--sf);border:1px solid var(--ln);color:var(--mu);font:12px ui-monospace,monospace}
+    .qp span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .qp button{all:unset;cursor:pointer;width:18px;height:18px;border-radius:50%;text-align:center;line-height:18px;flex:none}
+    .qp button:hover{background:var(--ln);color:var(--tx)}
     .empty{color:var(--mu);text-align:center;padding:20px 0}
   </style>
   <div class="t">
@@ -74,7 +78,8 @@
   let comments = [], quote = "";
   const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const open = (v) => { $("p").classList.toggle("open", v ?? !$("p").classList.contains("open")); if ($("p").classList.contains("open")) $("x").focus(); };
-  const setQuote = (q) => { quote = q; $("chip").textContent = q ? "re: “" + q.slice(0, 60) + "”" : ""; };
+  const setQuote = (q) => { quote = q; $("chip").innerHTML = q ? `<span class="qp"><span>“${esc(q.slice(0, 60))}”</span><button type="button" id="qx" title="remove quote">✕</button></span>` : ""; };
+  $("chip").addEventListener("click", (e) => { if (e.target.id === "qx") setQuote(""); });
 
   function render() {
     const open_ = comments.filter((c) => !c.parent && !c.resolved).length;
@@ -106,22 +111,71 @@
   $("fab").addEventListener("click", () => open());
   const load = () => api(`comments/${slug}`).then((c) => { comments = c; render(); }).catch(() => {});
 
-  // select text → “comment” pill
-  const pill = document.createElement("button");
-  pill.textContent = "comment";
-  pill.style.cssText = "position:absolute;z-index:2147483647;display:none;font:700 12px ui-monospace,monospace;padding:5px 10px;border:0;border-radius:6px;background:#e8590c;color:#fff;cursor:pointer;box-shadow:0 2px 10px #0004";
-  document.documentElement.appendChild(pill);
+  // select text → “comment” pill → inline popover: type, Enter, done (mouse never moves)
+  const sel = document.createElement("div");
+  sel.style.cssText = "position:absolute;z-index:2147483647;display:none";
+  const sr = sel.attachShadow({ mode: "open" });
+  sr.innerHTML = `
+  <style>
+    *{box-sizing:border-box;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
+    .t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#e8590c;--ai:#fff}
+    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512}}
+    .pb{display:none;border:0;border-radius:999px;padding:6px 12px;background:var(--ac);color:var(--ai);font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 4px 14px #0004}
+    .pop{display:none;width:320px;flex-direction:column;gap:8px;padding:10px;background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005}
+    .t.pill .pb{display:block}.t.pop .pop{display:flex}
+    .q{display:inline-block;max-width:100%;padding:3px 10px;border-radius:999px;background:var(--sf);border:1px solid var(--ln);color:var(--mu);font:12px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:flex-start}
+    textarea{width:100%;min-height:64px;resize:none;background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:8px}
+    textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
+    .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .hint{font:11px ui-monospace,monospace;color:var(--mu)}
+    .go{background:var(--ac);color:var(--ai);border:0;border-radius:999px;padding:6px 14px;font:700 12px ui-monospace,monospace;cursor:pointer}
+    .ok{display:none;padding:6px 12px;border-radius:999px;background:var(--tx);color:var(--bg);font:700 12px ui-monospace,monospace}
+    .t.done .ok{display:block}
+  </style>
+  <div class="t">
+    <button class="pb" id="pb" type="button">comment</button>
+    <form class="pop" id="pf"><span class="q" id="pq"></span>
+      <textarea id="px" placeholder="Comment for the agent…"></textarea>
+      <div class="row"><span class="hint">Enter send · Esc cancel</span><button class="go">send</button></div></form>
+    <div class="ok" id="ok">✔ sent</div>
+  </div>`;
+  document.documentElement.appendChild(sel);
+  const st = sr.querySelector(".t"), mode = (m) => { st.className = "t " + (m || ""); sel.style.display = m ? "block" : "none"; };
+  let selQuote = "", anchor = null;
+  function place() {  // keep the popover on screen, below the selection or above it
+    if (!anchor) return;
+    const w = st.classList.contains("pop") ? 320 : 100, h = st.classList.contains("pop") ? 150 : 34;
+    const left = Math.min(Math.max(anchor.left, 8), innerWidth - w - 8);
+    const top = anchor.bottom + 8 + h > innerHeight ? anchor.top - h - 8 : anchor.bottom + 8;
+    sel.style.left = scrollX + left + "px"; sel.style.top = scrollY + Math.max(top, 8) + "px";
+  }
   document.addEventListener("mouseup", (e) => {
-    if (e.target === pill) return;
+    if (e.target === sel) return;
     setTimeout(() => {
       const s = getSelection(), t = s.toString().trim();
-      if (!t || s.rangeCount === 0) { pill.style.display = "none"; return; }
+      if (!t || s.rangeCount === 0) { if (!st.classList.contains("pop")) mode(""); return; }
       const r = s.getRangeAt(0).getBoundingClientRect();
-      pill.style.cssText += `;display:block;left:${scrollX + r.left}px;top:${scrollY + r.bottom + 6}px`;
-      pill.dataset.q = t;
+      anchor = { left: r.left, top: r.top, bottom: r.bottom }; selQuote = t.slice(0, 400);
+      mode("pill"); place();
     }, 0);
   });
-  pill.addEventListener("click", () => { setQuote(pill.dataset.q.slice(0, 400)); pill.style.display = "none"; open(true); });
+  document.addEventListener("mousedown", (e) => { if (e.target !== sel && st.classList.contains("pop")) mode(""); });
+  const openPop = () => {
+    sr.getElementById("pq").textContent = "“" + selQuote.slice(0, 80) + "”";
+    mode("pop"); place(); sr.getElementById("px").focus();
+  };
+  sr.getElementById("pb").addEventListener("mousedown", (e) => e.preventDefault());  // keep the highlight
+  sr.getElementById("pb").addEventListener("click", openPop);
+  async function sendPop() {
+    const x = sr.getElementById("px"), text = x.value.trim(); if (!text) return;
+    await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: selQuote }) });
+    x.value = ""; mode("done"); place(); load(); getSelection().removeAllRanges(); setTimeout(() => mode(""), 1100);
+  }
+  sr.getElementById("pf").addEventListener("submit", (e) => { e.preventDefault(); sendPop(); });
+  sr.getElementById("px").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPop(); }
+    if (e.key === "Escape") mode("");
+  });
 
   // ── live: reload on republish, refresh comments on change ───────────────
   let v = null, c = null;
