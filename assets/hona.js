@@ -1,10 +1,13 @@
 /* hona runtime — injected into every artifact.
    1. live reload when the page is republished
-   2. comment panel (comments reach the agent through `hona comments`)
-   3. window.hona.db — a tiny shared document store for the page */
+   2. comments: panel, selection popover (Alt+C), quote pills
+   3. annotations: pins (Alt+P), persistent text highlights, drawing (Alt+M)
+   4. window.hona.db — a tiny shared document store for the page
+   Everything hona draws lives in shadow roots so artifact CSS can't touch it. */
 (() => {
   const slug = location.pathname.split("/")[2];
   if (!slug) return;
+  const SNAP = new URLSearchParams(location.search).get("hona_snap"); // headless screenshot: show marks only
   const api = (p, o = {}) =>
     fetch("/api/" + p, { headers: { "Content-Type": "application/json" }, ...o }).then((r) => (r.ok ? r.json() : Promise.reject(r)));
 
@@ -20,32 +23,188 @@
     },
   };
 
-  // ── comment panel (shadow DOM so artifact CSS can't touch it) ───────────
-  const host = document.createElement("div");
-  host.style.cssText = "position:fixed;z-index:2147483647;inset:auto 16px 16px auto;";
-  const root = host.attachShadow({ mode: "open" });
-  root.innerHTML = `
-  <style>
-    :host{all:initial}
-    *{box-sizing:border-box;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
-    .t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#e8590c;--ai:#fff}
-    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512}}
+  // everything below needs document.body, so wait for it (window.hona above is available immediately)
+  const boot = () => {
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const safeColor = (c) => (/^#[0-9a-f]{3,8}$/i.test(c) ? c : "#e03131");
+  const TOK = `.t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#e8590c;--ai:#fff;--bl:#2f6fed;--bi:#fff}
+    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512;--bl:#5b9dff;--bi:#0b1220}}`;
+  const mkHost = (style, css, html) => {
+    const h = document.createElement("div");
+    h.style.cssText = style;
+    const r = h.attachShadow({ mode: "open" });
+    r.innerHTML = `<style>:host{all:initial}*{box-sizing:border-box;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}${TOK}${css}</style><div class="t">${html}</div>`;
+    document.documentElement.appendChild(h);
+    return [h, r];
+  };
+
+  let comments = [];
+  let marksOn = true;
+  try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
+  let mode = null;                       // null | "pin" | "draw"
+  let tmpPin = null, draft = [];         // marks not yet sent
+  const roots = () => comments.filter((c) => !c.parent);
+  const anchorOf = (c) => c.anchor || (c.quote ? { type: "text", raw: c.quote, prefix: "", suffix: "" } : null);
+
+  // ── text index: robust quote anchoring (prefix + quote + suffix) ────────
+  function textIndex() {
+    const nodes = []; let text = "";
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (!n.parentElement || /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA)$/.test(n.parentElement.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    let n; while ((n = w.nextNode())) { nodes.push({ n, s: text.length }); text += n.nodeValue; }
+    return { text, nodes };
+  }
+  const posToIdx = (ix, node, off) => { const e = ix.nodes.find((x) => x.n === node); return e ? e.s + off : -1; };
+  function idxToPos(ix, i) {
+    let lo = 0, hi = ix.nodes.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ix.nodes[m].s <= i) lo = m; else hi = m - 1; }
+    const e = ix.nodes[lo]; return [e.n, Math.min(i - e.s, e.n.nodeValue.length)];
+  }
+  function textAnchor(range) {
+    const ix = textIndex(), a = posToIdx(ix, range.startContainer, range.startOffset), b = posToIdx(ix, range.endContainer, range.endOffset);
+    if (a < 0 || b <= a) return null;
+    const raw = ix.text.slice(a, Math.min(b, a + 400));
+    return { quote: raw.replace(/\s+/g, " ").trim(), anchor: { type: "text", raw, prefix: ix.text.slice(Math.max(0, a - 24), a), suffix: ix.text.slice(b, b + 24) } };
+  }
+  function locate(ix, an) {
+    if (!an.raw) return null;
+    let i = ix.text.indexOf((an.prefix || "") + an.raw + (an.suffix || ""));
+    let start = i >= 0 ? i + (an.prefix || "").length : ix.text.indexOf(an.raw);
+    if (start < 0) return null;
+    const s = idxToPos(ix, start), e = idxToPos(ix, start + an.raw.length);
+    if (!s || !e) return null;
+    const r = document.createRange(); r.setStart(...s); r.setEnd(...e); return r;
+  }
+
+  // ── element anchoring for pins ──────────────────────────────────────────
+  function cssPath(el) {
+    const parts = [];
+    while (el && el.nodeType === 1 && el !== document.documentElement) {
+      if (el.id && document.querySelectorAll("#" + CSS.escape(el.id)).length === 1) { parts.unshift("#" + CSS.escape(el.id)); break; }
+      let s = el.tagName.toLowerCase(); const p = el.parentElement;
+      if (p) { const sib = [...p.children].filter((c) => c.tagName === el.tagName); if (sib.length > 1) s += `:nth-of-type(${sib.indexOf(el) + 1})`; }
+      parts.unshift(s); el = el.parentElement;
+    }
+    return parts.join(" > ");
+  }
+  const labelOf = (el) => {
+    const t = (el.innerText || el.alt || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 40);
+    return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (t ? ` “${t}”` : "");
+  };
+  const docSize = () => ({ vw: document.documentElement.clientWidth, docH: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) });
+  function pinPos(an) {
+    let el = null; try { el = an.selector && document.querySelector(an.selector); } catch (e) {}
+    if (el) { const r = el.getBoundingClientRect(); if (r.width || r.height) return [scrollX + r.left + an.ox * r.width, scrollY + r.top + an.oy * r.height]; }
+    return [an.x * (document.documentElement.clientWidth / (an.vw || 1)), an.y];
+  }
+
+  // ── drawing → svg ───────────────────────────────────────────────────────
+  function strokeSvg(s, sx = 1) {
+    const P = s.pts.map(([x, y]) => [Math.round(x * sx * 10) / 10, y]), col = safeColor(s.color);
+    const a = `stroke="${col}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"`;
+    if (s.tool === "pen") return `<polyline points="${P.map((p) => p.join(",")).join(" ")}" fill="none" ${a}/>`;
+    const [x1, y1] = P[0], [x2, y2] = P[P.length - 1];
+    if (s.tool === "box") return `<rect x="${Math.min(x1, x2)}" y="${Math.min(y1, y2)}" width="${Math.abs(x2 - x1)}" height="${Math.abs(y2 - y1)}" rx="4" fill="${col}" fill-opacity=".08" ${a}/>`;
+    const g = Math.atan2(y2 - y1, x2 - x1), L = 14;
+    const p1 = [x2 - L * Math.cos(g - 0.45), y2 - L * Math.sin(g - 0.45)], p2 = [x2 - L * Math.cos(g + 0.45), y2 - L * Math.sin(g + 0.45)];
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" ${a}/><polygon points="${x2},${y2} ${p1.map((n) => n.toFixed(1))} ${p2.map((n) => n.toFixed(1))}" fill="${col}" stroke="none"/>`;
+  }
+
+  // ── overlay layer: pins, marks, drawing draft (document coordinates) ────
+  const [layer, lr] = mkHost("position:absolute;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483000;pointer-events:none", `
+    svg{position:absolute;left:0;top:0;overflow:visible}
+    .pin{position:absolute;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;background:var(--bl);color:var(--bi);
+         font:700 11px/20px ui-monospace,monospace;text-align:center;box-shadow:0 2px 8px #0005;cursor:pointer;pointer-events:auto;border:2px solid var(--bi)}
+    .pin.done{background:#888;opacity:.45}.pin.tmp{animation:p 1s infinite}.pin.sq{border-radius:6px}
+    @keyframes p{50%{transform:scale(1.18)}} g.done{opacity:.3}`, `<svg id="svg" width="1" height="1"><g id="marks"></g><g id="draft"></g></svg><div id="pins"></div>`);
+  const L = (id) => lr.getElementById(id);
+
+  function renderMarks() {
+    const only = SNAP && SNAP !== "all" ? +SNAP : null;
+    const sx = document.documentElement.clientWidth;
+    let svg = "", pins = "";
+    if (marksOn || SNAP) for (const c of roots()) {
+      if (only !== null && c.id !== only) continue;
+      const an = c.anchor, cls = c.resolved && only === null ? " done" : "";
+      if (c.resolved && SNAP && only === null) continue;
+      if (an && an.type === "pin") { const [x, y] = pinPos(an); pins += `<div class="pin${cls}" data-t="${c.id}" style="left:${x}px;top:${y}px">${c.id}</div>`; }
+      if (an && an.type === "draw" && an.strokes && an.strokes.length) {
+        const k = sx / (an.vw || sx);
+        svg += `<g class="${cls.trim()}">${an.strokes.map((s) => strokeSvg(s, k)).join("")}</g>`;
+        const [px, py] = an.strokes[0].pts[0]; pins += `<div class="pin sq${cls}" data-t="${c.id}" style="left:${px * k}px;top:${py}px">${c.id}</div>`;
+      }
+    }
+    if (tmpPin) pins += `<div class="pin tmp" style="left:${tmpPin.x}px;top:${tmpPin.y}px">+</div>`;
+    L("marks").innerHTML = svg; L("pins").innerHTML = pins;
+    renderDraft();
+  }
+  const renderDraft = () => { L("draft").innerHTML = draft.map((s) => strokeSvg(s)).join(""); };
+  lr.addEventListener("click", (e) => { const t = e.target.closest && e.target.closest("[data-t]"); if (t) focusThread(+t.dataset.t); });
+
+  // ── persistent text highlights (CSS Custom Highlight API; no DOM changes) ──
+  const hs = document.createElement("style");
+  hs.textContent = "::highlight(hona){background:rgba(47,111,237,.3)}::highlight(hona-done){background:rgba(128,128,128,.18)}";
+  document.documentElement.appendChild(hs);
+  let hlRanges = [];
+  function renderHighlights() {
+    hlRanges = [];
+    if (!(window.CSS && CSS.highlights && window.Highlight)) return;
+    const act = [], done = [];
+    if (marksOn || SNAP) {
+      const ix = textIndex();
+      for (const c of roots()) {
+        if (SNAP && SNAP !== "all" && c.id !== +SNAP) continue;
+        const an = anchorOf(c); if (!an || an.type !== "text") continue;
+        const r = locate(ix, an); if (!r) continue;
+        hlRanges.push({ id: c.id, r }); (c.resolved ? done : act).push(r);
+      }
+    }
+    CSS.highlights.set("hona", new Highlight(...act)); CSS.highlights.set("hona-done", new Highlight(...done));
+  }
+  document.addEventListener("click", (e) => {
+    if (mode || !getSelection().isCollapsed) return;
+    for (const h of hlRanges) for (const q of h.r.getClientRects())
+      if (e.clientX >= q.left && e.clientX <= q.right && e.clientY >= q.top && e.clientY <= q.bottom) return focusThread(h.id);
+  });
+
+  const renderAll = () => { renderMarks(); renderHighlights(); };
+  let rt = 0; const later = () => { clearTimeout(rt); rt = setTimeout(renderAll, 120); };
+  addEventListener("resize", later); addEventListener("load", later);
+  if (window.ResizeObserver) new ResizeObserver(later).observe(document.body);
+
+  let focusThread = () => {}, load = () => api(`comments/${slug}`).then((c) => { comments = c; renderAll(); }).catch(() => {});
+
+  // snapshot mode: only the marks, no UI, no polling
+  if (SNAP) { load(); return; }
+
+  // ── comment panel ───────────────────────────────────────────────────────
+  const [host, root] = mkHost("position:fixed;z-index:2147483647;inset:auto 16px 16px auto", `
+    .wrap{position:relative;width:44px;height:44px}
     .fab{width:44px;height:44px;border-radius:50%;border:0;background:var(--ac);cursor:pointer;display:grid;place-items:center;position:relative;box-shadow:0 4px 18px #0004}
     .fab svg{width:24px;height:24px}
     .n{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;background:var(--tx);color:var(--bg);font:700 11px/18px ui-monospace,monospace;text-align:center;padding:0 4px}
     .n:empty{display:none}
+    .dock{position:absolute;right:54px;bottom:6px;display:none;gap:6px;padding:0 8px 0 0}
+    .wrap:hover .dock,.t.open .dock{display:flex}
+    .dk{border:1px solid var(--ln);background:var(--bg);color:var(--tx);border-radius:999px;padding:6px 12px;font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 2px 10px #0003;white-space:nowrap}
+    .dk:hover{border-color:var(--bl)}.dk.on{background:var(--bl);color:var(--bi);border-color:var(--bl)}
     .p{position:fixed;right:16px;bottom:72px;width:360px;max-width:calc(100vw - 32px);max-height:70vh;display:none;flex-direction:column;
        background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005;overflow:hidden}
     .p.open{display:flex}
-    h4{margin:0;padding:12px 14px;border-bottom:1px solid var(--ln);font:700 13px ui-monospace,monospace;display:flex;justify-content:space-between}
+    h4{margin:0;padding:12px 14px;border-bottom:1px solid var(--ln);font:700 13px ui-monospace,monospace;display:flex;justify-content:space-between;align-items:center;gap:8px}
+    h4 .r{font-weight:400;color:var(--mu);display:flex;gap:10px;align-items:center}
     .l{overflow:auto;padding:10px 14px;display:flex;flex-direction:column;gap:12px;flex:1}
+    .th{display:flex;flex-direction:column;gap:6px;border-radius:10px}.th.flash{outline:2px solid var(--bl);outline-offset:3px}
     .c{background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:8px 10px}
-    .c.agent{border-left:3px solid var(--ac)}.c.done{opacity:.55}
+    .c.agent{border-left:3px solid var(--ac)}.th.done .c{opacity:.55}
     .m{font:11px ui-monospace,monospace;color:var(--mu);display:flex;gap:8px;justify-content:space-between}
     .q{margin:4px 0;padding-left:8px;border-left:2px solid var(--ln);color:var(--mu);font-size:12px}
+    .kind{display:inline-block;margin:4px 0;padding:2px 9px;border-radius:999px;background:var(--bl);color:var(--bi);font:700 11px ui-monospace,monospace;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .txt{white-space:pre-wrap;word-break:break-word}
     button.s{background:none;border:0;color:var(--mu);font:11px ui-monospace,monospace;cursor:pointer;padding:0}
-    button.s:hover{color:var(--ac)}
+    button.s:hover{color:var(--bl)}
     form{border-top:1px solid var(--ln);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
     textarea{width:100%;resize:vertical;min-height:56px;background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:8px}
     textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
@@ -56,50 +215,60 @@
     .qp span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .qp button{all:unset;cursor:pointer;width:18px;height:18px;border-radius:50%;text-align:center;line-height:18px;flex:none}
     .qp button:hover{background:var(--ln);color:var(--tx)}
-    .empty{color:var(--mu);text-align:center;padding:20px 0}
-  </style>
-  <div class="t">
+    .empty{color:var(--mu);text-align:center;padding:20px 0}`, `
     <div class="p" id="p">
-      <h4><span>hona · comments</span><span id="st" style="color:var(--mu);font-weight:400"></span></h4>
+      <h4><span>hona · comments</span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
       <div class="l" id="l"></div>
       <form id="f">
-        <textarea id="x" placeholder="Comment for the agent… (⌘/Ctrl+Enter to send)"></textarea>
+        <textarea id="x" placeholder="Comment for the agent… (Ctrl+Enter to send)"></textarea>
         <div class="row"><span class="chip" id="chip"></span><button class="go">send</button></div>
       </form>
     </div>
-    <button class="fab" id="fab" title="hona comments">
-      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="17" fill="none" stroke="#1a1512" stroke-width="6"/><circle cx="32" cy="32" r="6.5" fill="#1a1512"/></svg>
-      <span class="n" id="n"></span>
-    </button>
-  </div>`;
+    <div class="wrap">
+      <div class="dock"><button class="dk" id="dpin" type="button" title="Drop a pin (Alt+P)">pin</button><button class="dk" id="ddraw" type="button" title="Draw on the page (Alt+M)">draw</button></div>
+      <button class="fab" id="fab" title="hona comments">
+        <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="17" fill="none" stroke="#1a1512" stroke-width="6"/><circle cx="32" cy="32" r="6.5" fill="#1a1512"/></svg>
+        <span class="n" id="n"></span>
+      </button>
+    </div>`);
   const $ = (id) => root.getElementById(id);
-  document.documentElement.appendChild(host);
-
-  let comments = [], quote = "";
-  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const open = (v) => { $("p").classList.toggle("open", v ?? !$("p").classList.contains("open")); if ($("p").classList.contains("open")) $("x").focus(); };
+  const tEl = root.querySelector(".t");
+  let quote = "", replyTo = null;
+  const open = (v) => { const on = v ?? !$("p").classList.contains("open"); $("p").classList.toggle("open", on); tEl.classList.toggle("open", on); if (on) $("x").focus(); };
   const setQuote = (q) => { quote = q; $("chip").innerHTML = q ? `<span class="qp"><span>“${esc(q.slice(0, 60))}”</span><button type="button" id="qx" title="remove quote">✕</button></span>` : ""; };
   $("chip").addEventListener("click", (e) => { if (e.target.id === "qx") setQuote(""); });
 
+  const kindOf = (c) => {
+    const a = c.anchor; if (!a) return "";
+    if (a.type === "pin") return `<span class="kind">pin · ${esc(a.label || "")}</span>`;
+    if (a.type === "draw") return `<span class="kind">drawing · ${(a.strokes || []).length} mark${(a.strokes || []).length === 1 ? "" : "s"}</span>`;
+    return "";
+  };
   function render() {
-    const open_ = comments.filter((c) => !c.parent && !c.resolved).length;
-    $("n").textContent = open_ || "";
-    $("st").textContent = comments.length ? `${open_} open` : "";
-    const roots = comments.filter((c) => !c.parent);
-    $("l").innerHTML = roots.length ? roots.map((r) => {
+    const rs = roots(), open_ = rs.filter((c) => !c.resolved).length;
+    $("n").textContent = open_ || ""; $("st").textContent = comments.length ? `${open_} open` : "";
+    $("mk").textContent = marksOn ? "marks on" : "marks off";
+    $("l").innerHTML = rs.length ? rs.map((r) => {
       const thread = [r, ...comments.filter((c) => c.parent === r.id)];
-      return thread.map((c, i) => `<div class="c ${c.author === "agent" ? "agent" : ""} ${r.resolved ? "done" : ""}">
-        <div class="m"><span>${esc(c.author)} · ${new Date(c.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+      return `<div class="th ${r.resolved ? "done" : ""}" data-t="${r.id}">` + thread.map((c, i) => `<div class="c ${c.author === "agent" ? "agent" : ""}">
+        <div class="m"><span>#${c.id} ${esc(c.author)} · ${new Date(c.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         ${i === 0 ? `<span><button class="s" data-r="${r.id}">reply</button> <button class="s" data-v="${r.id}">${r.resolved ? "reopen" : "resolve"}</button></span>` : ""}</div>
-        ${c.quote ? `<div class="q">${esc(c.quote)}</div>` : ""}<div class="txt">${esc(c.text)}</div></div>`).join("");
-    }).join("") : `<div class="empty">No comments yet.<br>Select text on the page to comment on it.</div>`;
+        ${i === 0 ? kindOf(c) : ""}${c.quote ? `<div class="q">${esc(c.quote)}</div>` : ""}<div class="txt">${esc(c.text)}</div></div>`).join("") + `</div>`;
+    }).join("") : `<div class="empty">No comments yet.<br>Select text, or use pin / draw.</div>`;
   }
-  let replyTo = null;
+  focusThread = (id) => {
+    open(true); const el = $("l").querySelector(`[data-t="${id}"]`); if (!el) return;
+    el.scrollIntoView({ block: "nearest" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1300);
+  };
   $("l").addEventListener("click", (e) => {
     const t = e.target;
     if (t.dataset.r) { replyTo = +t.dataset.r; $("x").placeholder = "Reply…"; $("x").focus(); }
     if (t.dataset.v) { const c = comments.find((c) => c.id === +t.dataset.v);
       api(`comments/${slug}/${c.id}/${c.resolved ? "reopen" : "resolve"}`, { method: "POST", body: "{}" }).then(load); }
+  });
+  $("mk").addEventListener("click", () => {
+    marksOn = !marksOn; try { localStorage.setItem("hona-marks", marksOn ? "on" : "off"); } catch (e) {}
+    render(); renderAll();
   });
   async function send() {
     const text = $("x").value.trim(); if (!text) return;
@@ -109,82 +278,156 @@
   $("f").addEventListener("submit", (e) => { e.preventDefault(); send(); });
   $("x").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); });
   $("fab").addEventListener("click", () => open());
-  const load = () => api(`comments/${slug}`).then((c) => { comments = c; render(); }).catch(() => {});
+  const baseLoad = load;
+  load = () => baseLoad().then(render);
 
-  // select text → “comment” pill → inline popover: type, Enter, done (mouse never moves)
-  const sel = document.createElement("div");
-  sel.style.cssText = "position:absolute;z-index:2147483647;display:none";
-  const sr = sel.attachShadow({ mode: "open" });
-  sr.innerHTML = `
-  <style>
-    *{box-sizing:border-box;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
-    .t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#2f6fed;--ai:#fff}
-    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#5b9dff;--ai:#0b1220}}
-    .pb{display:none;border:0;border-radius:999px;padding:6px 12px;background:var(--ac);color:var(--ai);font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 4px 14px #0004}
+  // ── composer: inline popover used by text, pin and drawing ──────────────
+  const [sel, sr] = mkHost("position:absolute;z-index:2147483647;display:none", `
+    .pb{display:none;border:0;border-radius:999px;padding:6px 12px;background:var(--bl);color:var(--bi);font:700 12px ui-monospace,monospace;cursor:pointer;box-shadow:0 4px 14px #0004}
     .pop{display:none;width:320px;flex-direction:column;gap:8px;padding:10px;background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005}
     .t.m-pill .pb{display:block}.t.m-pop .pop{display:flex}
     .q{display:inline-block;max-width:100%;padding:3px 10px;border-radius:999px;background:var(--sf);border:1px solid var(--ln);color:var(--mu);font:12px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:flex-start}
     textarea{width:100%;min-height:64px;resize:none;background:var(--sf);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:8px}
-    textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
+    textarea:focus{outline:2px solid var(--bl);outline-offset:-1px}
     .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
     .hint{font:11px ui-monospace,monospace;color:var(--mu)}
-    .go{background:var(--ac);color:var(--ai);border:0;border-radius:999px;padding:6px 14px;font:700 12px ui-monospace,monospace;cursor:pointer}
+    .go{background:var(--bl);color:var(--bi);border:0;border-radius:999px;padding:6px 14px;font:700 12px ui-monospace,monospace;cursor:pointer}
     .ok{display:none;padding:6px 12px;border-radius:999px;background:var(--tx);color:var(--bg);font:700 12px ui-monospace,monospace}
-    .t.m-done .ok{display:block}
-  </style>
-  <div class="t">
+    .t.m-done .ok{display:block}`, `
     <button class="pb" id="pb" type="button">comment</button>
     <form class="pop" id="pf"><span class="q" id="pq"></span>
       <textarea id="px" placeholder="Comment for the agent…"></textarea>
       <div class="row"><span class="hint">Enter send · Esc cancel</span><button class="go">send</button></div></form>
-    <div class="ok" id="ok">✔ sent</div>
-  </div>`;
-  document.documentElement.appendChild(sel);
-  const st = sr.querySelector(".t"), mode = (m) => { st.className = "t" + (m ? " m-" + m : ""); sel.style.display = m ? "block" : "none"; };
-  let selQuote = "", anchor = null;
-  function place() {  // keep the popover on screen, below the selection or above it
-    if (!anchor) return;
-    const w = st.classList.contains("m-pop") ? 320 : 100, h = st.classList.contains("m-pop") ? 150 : 34;
-    const left = Math.min(Math.max(anchor.left, 8), innerWidth - w - 8);
-    const top = anchor.bottom + 8 + h > innerHeight ? anchor.top - h - 8 : anchor.bottom + 8;
+    <div class="ok" id="ok">✔ sent</div>`);
+  const st = sr.querySelector(".t");
+  let pending = null, anchorRect = null;
+  const cm = (m) => { st.className = "t" + (m ? " m-" + m : ""); sel.style.display = m ? "block" : "none"; };
+  const composing = () => st.classList.contains("m-pop");
+  function finish() {  // discard unsent marks and close
+    tmpPin = null; draft = []; pending = null; cm(""); renderMarks();
+  }
+  function place() {
+    if (!anchorRect) return;
+    const pop = composing(), w = pop ? 320 : 100, h = pop ? 150 : 34;
+    const left = Math.min(Math.max(anchorRect.left, 8), innerWidth - w - 8);
+    const top = anchorRect.bottom + 8 + h > innerHeight ? anchorRect.top - h - 8 : anchorRect.bottom + 8;
     sel.style.left = scrollX + left + "px"; sel.style.top = scrollY + Math.max(top, 8) + "px";
   }
+  function compose(p, rect, label) {
+    pending = p; anchorRect = rect;
+    sr.getElementById("pq").textContent = label; cm("pop"); place(); sr.getElementById("px").focus();
+  }
+  function fromSelection() {
+    const s = getSelection();
+    if (!s.rangeCount || !s.toString().trim()) return null;
+    const r = s.getRangeAt(0), b = r.getBoundingClientRect(), ta = textAnchor(r);
+    const q = ta ? ta.quote : s.toString().trim().replace(/\s+/g, " ").slice(0, 400);
+    return { p: { quote: q, anchor: ta ? ta.anchor : null }, rect: { left: b.left, top: b.top, bottom: b.bottom } };
+  }
+  let selPending = null;
   document.addEventListener("mouseup", (e) => {
-    if (e.target === sel) return;
+    if (e.target === sel || mode) return;
     setTimeout(() => {
-      const s = getSelection(), t = s.toString().trim();
-      if (!t || s.rangeCount === 0) { if (!st.classList.contains("m-pop")) mode(""); return; }
-      const r = s.getRangeAt(0).getBoundingClientRect();
-      anchor = { left: r.left, top: r.top, bottom: r.bottom }; selQuote = t.slice(0, 400);
-      mode("pill"); place();
+      const f = fromSelection();
+      if (!f) { if (!composing()) cm(""); return; }
+      selPending = f; anchorRect = f.rect; cm("pill"); place();
     }, 0);
   });
-  document.addEventListener("mousedown", (e) => { if (e.target !== sel && st.classList.contains("m-pop")) mode(""); });
-  const openPop = () => {
-    sr.getElementById("pq").textContent = "“" + selQuote.slice(0, 80) + "”";
-    mode("pop"); place(); sr.getElementById("px").focus();
-  };
+  document.addEventListener("mousedown", (e) => { if (composing() && !e.composedPath().includes(sel)) finish(); });
   sr.getElementById("pb").addEventListener("mousedown", (e) => e.preventDefault());  // keep the highlight
-  sr.getElementById("pb").addEventListener("click", openPop);
+  sr.getElementById("pb").addEventListener("click", () => selPending && compose(selPending.p, selPending.rect, "“" + selPending.p.quote.slice(0, 80) + "”"));
   async function sendPop() {
-    const x = sr.getElementById("px"), text = x.value.trim(); if (!text) return;
-    await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: selQuote }) });
-    x.value = ""; mode("done"); place(); load(); getSelection().removeAllRanges(); setTimeout(() => mode(""), 1100);
+    const x = sr.getElementById("px"), text = x.value.trim(); if (!text || !pending) return;
+    await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: pending.quote || "", anchor: pending.anchor || undefined }) });
+    x.value = ""; tmpPin = null; draft = []; pending = null; cm("done"); place(); load(); getSelection().removeAllRanges(); setTimeout(() => cm(""), 1100);
   }
-  // Alt+C: with text selected → popover at the selection; otherwise toggle the comments panel
-  document.addEventListener("keydown", (e) => {
-    if (!e.altKey || e.ctrlKey || e.metaKey || e.code !== "KeyC") return;
-    e.preventDefault();
-    const s = getSelection(), t = s.toString().trim();
-    if (t && s.rangeCount) {
-      const r = s.getRangeAt(0).getBoundingClientRect();
-      anchor = { left: r.left, top: r.top, bottom: r.bottom }; selQuote = t.slice(0, 400); openPop();
-    } else open();
-  });
   sr.getElementById("pf").addEventListener("submit", (e) => { e.preventDefault(); sendPop(); });
   sr.getElementById("px").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPop(); }
-    if (e.key === "Escape") mode("");
+    if (e.key === "Escape") finish();
+  });
+
+  // ── pin mode ────────────────────────────────────────────────────────────
+  const modeStyle = document.createElement("style");
+  modeStyle.textContent = "html.hona-pin,html.hona-pin *{cursor:crosshair!important}";
+  document.documentElement.appendChild(modeStyle);
+  document.addEventListener("click", (e) => {
+    if (mode !== "pin" || e.composedPath().some((n) => n === host || n === sel || n === layer)) return;
+    e.preventDefault(); e.stopPropagation();
+    const el = document.elementFromPoint(e.clientX, e.clientY) || document.body, r = el.getBoundingClientRect();
+    const anchor = { type: "pin", selector: cssPath(el), ox: (e.clientX - r.left) / (r.width || 1), oy: (e.clientY - r.top) / (r.height || 1), x: e.pageX, y: e.pageY, label: labelOf(el), ...docSize() };
+    setMode(null); tmpPin = { x: e.pageX, y: e.pageY }; renderMarks();
+    compose({ quote: "", anchor }, { left: e.clientX, top: e.clientY - 12, bottom: e.clientY + 12 }, "pin · " + anchor.label);
+  }, true);
+
+  // ── draw mode ───────────────────────────────────────────────────────────
+  const COLORS = ["#e03131", "#2f6fed", "#f59f00"];
+  let tool = "pen", color = COLORS[0];
+  const [dh, dr] = mkHost("position:fixed;inset:0;z-index:2147483646;display:none;pointer-events:none", `
+    .cv{position:fixed;inset:0;pointer-events:auto;cursor:crosshair;touch-action:none}
+    .bar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);pointer-events:auto;display:flex;gap:6px;align-items:center;padding:8px;
+         background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:999px;box-shadow:0 8px 30px #0005}
+    .b{border:0;background:none;color:var(--tx);border-radius:999px;padding:6px 12px;font:700 12px ui-monospace,monospace;cursor:pointer}
+    .b:hover{background:var(--sf)}.b.on{background:var(--bl);color:var(--bi)}.b.go{background:var(--bl);color:var(--bi)}
+    .sw{width:18px;height:18px;border-radius:50%;border:2px solid var(--bg);outline:1px solid var(--ln);cursor:pointer;padding:0}.sw.on{outline:2px solid var(--tx)}
+    .sep{width:1px;height:20px;background:var(--ln)}`, `
+    <div class="cv" id="cv"></div>
+    <div class="bar" id="bar">
+      <button class="b" data-tool="pen">pen</button><button class="b" data-tool="arrow">arrow</button><button class="b" data-tool="box">box</button>
+      <span class="sep"></span>${COLORS.map((c) => `<button class="sw" data-color="${c}" style="background:${c}" title="${c}"></button>`).join("")}
+      <span class="sep"></span><button class="b" id="undo">undo</button><button class="b" id="cancel">cancel</button><button class="b go" id="done">done</button>
+    </div>`);
+  const D = (id) => dr.getElementById(id);
+  const paintBar = () => {
+    dr.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === tool));
+    dr.querySelectorAll("[data-color]").forEach((b) => b.classList.toggle("on", b.dataset.color === color));
+  };
+  D("bar").addEventListener("click", (e) => {
+    const t = e.target; if (t.dataset.tool) tool = t.dataset.tool; if (t.dataset.color) color = t.dataset.color; paintBar();
+  });
+  D("undo").addEventListener("click", () => { draft.pop(); renderDraft(); });
+  D("cancel").addEventListener("click", () => { finish(); setMode(null); });
+  D("done").addEventListener("click", () => {
+    if (!draft.length) return;
+    const br = D("bar").getBoundingClientRect(), n = draft.length;
+    const anchor = { type: "draw", strokes: draft.map((s) => ({ tool: s.tool, color: s.color, pts: s.pts })), ...docSize() };
+    dh.style.display = "none"; mode = null; syncDock();
+    compose({ quote: "", anchor }, { left: br.left, top: br.top, bottom: br.top }, `drawing · ${n} mark${n === 1 ? "" : "s"}`);
+  });
+  let cur = null;
+  const pt = (e) => [Math.round((e.clientX + scrollX) * 10) / 10, Math.round((e.clientY + scrollY) * 10) / 10];
+  D("cv").addEventListener("pointerdown", (e) => { D("cv").setPointerCapture(e.pointerId); cur = { tool, color, pts: [pt(e)] }; draft.push(cur); });
+  D("cv").addEventListener("pointermove", (e) => {
+    if (!cur) return; const p = pt(e), last = cur.pts[cur.pts.length - 1];
+    if (cur.tool === "pen") { if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2.5) cur.pts.push(p); }
+    else cur.pts[1] = p;
+    renderDraft();
+  });
+  const endStroke = () => {
+    if (!cur) return;
+    const a = cur.pts[0], b = cur.pts[cur.pts.length - 1];
+    if (cur.pts.length < 2 || Math.hypot(b[0] - a[0], b[1] - a[1]) < 6) draft.pop();
+    cur = null; renderDraft();
+  };
+  D("cv").addEventListener("pointerup", endStroke); D("cv").addEventListener("pointercancel", endStroke);
+
+  // ── mode switching + shortcuts ──────────────────────────────────────────
+  const syncDock = () => { $("dpin").classList.toggle("on", mode === "pin"); $("ddraw").classList.toggle("on", mode === "draw"); document.documentElement.classList.toggle("hona-pin", mode === "pin"); };
+  function setMode(m) {
+    if (m) { finish(); getSelection().removeAllRanges(); }
+    mode = m; dh.style.display = m === "draw" ? "block" : "none"; if (m === "draw") paintBar(); syncDock();
+  }
+  const toggle = (m) => setMode(mode === m ? null : m);
+  $("dpin").addEventListener("click", () => toggle("pin")); $("ddraw").addEventListener("click", () => toggle("draw"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && (mode || composing())) { finish(); setMode(null); return; }
+    if (!e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.code === "KeyP") { e.preventDefault(); toggle("pin"); }
+    else if (e.code === "KeyM") { e.preventDefault(); toggle("draw"); }
+    else if (e.code === "KeyC") {  // selection → popover at it; otherwise toggle the panel
+      e.preventDefault(); const f = fromSelection();
+      if (f) compose(f.p, f.rect, "“" + f.p.quote.slice(0, 80) + "”"); else open();
+    }
   });
 
   // ── live: reload on republish, refresh comments on change ───────────────
@@ -198,4 +441,6 @@
     } catch (e) {}
   };
   load(); tick(); setInterval(tick, 1500);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

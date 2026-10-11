@@ -40,6 +40,7 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona list` | everything published, with open-comment counts |
 | `hona open [slug]` / `hona rm <slug>` | open or delete one |
 | `hona comments [slug] [--wait] [--all] [--json]` | read feedback; `--wait` blocks until you write something |
+| `hona snap <slug> [id] [--out f.png]` | screenshot of the page with pins and drawings drawn on it |
 | `hona reply <slug> <id> <text>` / `hona resolve <slug> <id>` | answer or close a thread (shows live in the page) |
 | `hona data <slug> <coll> [get <id>\|set <id> <json>\|del <id>]` | shared data the page can also use |
 | `hona lan [on\|off\|status]` | share on your network, protected by a secret token |
@@ -55,6 +56,22 @@ ln -s ~/hona/hona ~/.local/bin/hona
 Every page gets a ring-and-dot button. Select text and a **comment** pill appears. Comments are quoted, threaded and
 resolvable, and you get a desktop notification (`notify-send`). The agent reads them with `hona comments <slug> --wait`,
 answers with `hona reply`, and republishes; your tab reloads on its own.
+
+### Annotations
+
+| gesture | what it does |
+| --- | --- |
+| select text, **Alt+C** (or the blue pill) | comment on text; the text stays highlighted, click it to jump to the thread |
+| **Alt+P** (dock: `pin`) | click anywhere (images, mockups, diagrams) to drop a numbered pin |
+| **Alt+M** (dock: `draw`) | pen, arrow and box over the page, 3 colours, undo; **done** opens the comment box |
+| `Esc` | cancel the current mode or popover |
+
+Hover the ring-and-dot button to see the dock. Pins follow the element they were dropped on, text highlights re-find
+their quote after the page is republished, and **marks on/off** in the panel header hides everything.
+
+For the agent, `hona comments` prints where a pin or drawing is (element, selector, coordinates) and renders a
+screenshot with your marks on it (headless Chromium, saved under `~/.local/share/hona/snaps/`); `--json` includes the
+anchor and the screenshot path. `--no-shots` skips rendering.
 
 ### Data
 
