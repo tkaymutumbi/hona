@@ -33,7 +33,7 @@ Scale: 13 / 16 / 20 / 28 / 40 px. Space: 4px base (`--h-1` … `--h-12`). Radius
 ## Components
 
 `.h-page` · `.h-wrap` · `.h-stack` · `.h-card` (`a.h-card` is a link card) · `.h-badge` (`.ok .warn .err`) ·
-`.h-btn` (`.ghost`) · `.h-eyebrow` · `.h-brand`
+`.h-btn` (`.ghost`) · `.h-option` (pair with `data-hona-choice`) · `.h-eyebrow` · `.h-brand`
 
 ## Rules
 

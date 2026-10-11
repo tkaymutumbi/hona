@@ -48,6 +48,10 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona decision <slug> [--wait]` | the user's verdict (exit 0 approved, 3 changes requested, 4 none yet) |
 | `hona versions <slug>` / `hona diff <slug> [a] [b]` / `hona restore <slug> <n>` | history, text diff, roll back |
 | `hona focus [on\|off]` | bring a newly opened page to the front (Hyprland); reloads never steal focus |
+| `hona choices <slug>` | the user's picks on option blocks |
+| `hona delete <slug> <id>` / `hona undelete` | soft-delete a comment thread |
+| `hona export <slug>` | one standalone HTML file with comments and marks |
+| `hona pin <slug>` / `hona unpin` / `hona trash [restore <name>\|empty]` | favourites on top; manage removed pages |
 | `hona mcp-install [status]` | register the MCP tools with Claude Code, OpenCode and Codex |
 | `hona mcp` | the MCP server itself (stdio; started by your agent) |
 | `hona serve` | run the server in the foreground (it auto-starts otherwise) |
@@ -88,6 +92,28 @@ version shows the old decision as out of date until you decide again. **history*
 shows a text **diff** against the previous one, opens an old version read-only, and can **restore** it as a new version.
 `hona decision <slug> --wait` and the MCP `hona_wait_for_feedback` return as soon as you decide.
 
+### Option blocks
+
+Mark any element as a choice and the user can pick it with a click (or Enter): 
+
+```html
+<div class="h-card h-option" data-hona-choice="logo" data-value="A">Option A</div>
+<div class="h-card h-option" data-hona-choice="logo" data-value="B">Option B</div>
+```
+
+The pick is outlined on the page, shown in the panel, and delivered to the agent (`hona choices <slug>`, `hona comments --wait`,
+MCP `hona_wait_for_feedback` / `hona_choices`). Clicking the picked option again clears it.
+
+### Delete, export, index
+
+- **Delete a comment:** `delete` on a thread removes it with an undo bar (`hona delete` / `hona undelete` from the CLI). Deleted threads
+  vanish from the page, the pinned list and the agent's feedback.
+- **Export:** `hona export <slug> [--out f.html] [--no-comments]` writes one standalone file with the page, its CSS and images inlined, and the
+  comments, pins, drawings, picks and decision embedded read-only. It opens in any browser with no hona running.
+- **Index:** at `http://localhost:4747`, **pin** keeps a page at the top and **remove** moves it to a trash you can restore from (undo toast,
+  `trash` section, `hona trash`). Nothing is deleted for good until you choose **delete forever** or `hona trash empty`.
+- **Screenshots follow your theme:** pins and drawings remember whether you were in light or dark mode; `hona snap --theme light|dark` overrides it.
+
 ### MCP
 
 `hona mcp-install` registers a stdio MCP server with Claude Code (user scope), OpenCode (`~/.config/opencode/opencode.json`,
@@ -95,7 +121,7 @@ backup kept) and Codex (`~/.codex/config.toml`). The agent then publishes and li
 drawing screenshots arrive as images it can look at:
 
 `hona_publish` · `hona_wait_for_feedback` · `hona_feedback` · `hona_reply` · `hona_resolve` · `hona_decision` ·
-`hona_list` · `hona_versions` · `hona_snapshot`
+`hona_list` · `hona_versions` · `hona_choices` · `hona_snapshot`
 
 Manual config for any other MCP client: command `python3`, args `["/path/to/hona/hona", "mcp"]`.
 

@@ -89,6 +89,9 @@ a.h-card:hover { border-color: var(--h-accent); transform: translateY(-1px); }
 .h-btn.ghost { background: transparent; color: var(--h-text); border: 1px solid var(--h-line); }
 .h-stack > * + * { margin-top: var(--h-3); }
 
+.h-option { border: 1px solid var(--h-line); border-radius: var(--h-radius); padding: var(--h-4) var(--h-6); background: var(--h-surface); text-align: center; transition: border-color .15s; }
+.h-option:hover { border-color: var(--h-accent); }
+
 /* brand header used by hona's own pages */
 .h-brand { display: flex; align-items: center; gap: var(--h-3); font: 700 var(--h-text-lg)/1 var(--h-mono); margin-bottom: var(--h-8); }
 .h-brand img { width: 32px; height: 32px; }

@@ -19,7 +19,7 @@ MCP tools or the CLI; they do the same thing.
 - **MCP tools, if you have them** (`hona_publish`, `hona_wait_for_feedback`, `hona_reply`, ...): use these. They return
   screenshots as images you can look at directly, and waiting is a single tool call. Tool list: `hona_publish`,
   `hona_wait_for_feedback`, `hona_feedback`, `hona_reply`, `hona_resolve`, `hona_decision`, `hona_list`,
-  `hona_versions`, `hona_snapshot`.
+  `hona_versions`, `hona_choices`, `hona_snapshot`.
 - **CLI otherwise:** `command -v hona`. If missing, tell the user (install: https://github.com/tkaymutumbi/hona) and
   describe the result in the terminal instead. If the MCP tools are missing but the CLI exists, `hona mcp-install`
   registers them (restart the session to load them).
@@ -38,7 +38,7 @@ MCP tools or the CLI; they do the same thing.
    you did>"`. Do not change things silently. Resolve with `hona_resolve` only when the request is clearly done;
    otherwise leave resolving to the user.
 
-Other commands: `hona list`, `hona open [slug]`, `hona rm <slug>`, `hona versions <slug>`, `hona diff <slug> [a] [b]`,
+Other commands: `hona export <slug>` (one standalone file with the comments baked in, for sharing), `hona list`, `hona open [slug]`, `hona rm <slug>`, `hona versions <slug>`, `hona diff <slug> [a] [b]`,
 `hona restore <slug> <n>`.
 
 ## Reading feedback correctly
@@ -65,6 +65,13 @@ The user can press **approve** or **request changes** (with a note) on a page. T
   shows whether the latest decision is out of date.
 - When you publish something that needs a go/no-go (a plan, a migration, an approach), say so and wait for a
   decision before acting on it. Comments alone are not approval.
+
+## Letting the user choose
+
+When you want the user to pick between options (logos, layouts, plans), make each option a card with
+`data-hona-choice="<group>" data-value="<A>"` (and the `h-option` class). They click one; the pick arrives as
+`choice: <group> = <value>` through `hona_wait_for_feedback` / `hona comments --wait`, or any time via `hona_choices` /
+`hona choices <slug>`. One group per question; use clear short values. Prefer this to asking them to type a letter.
 
 ## Writing good pages
 

@@ -18,6 +18,7 @@ ICON = '<link rel="icon" type="image/svg+xml" href="/_/favicon.svg">'
 RUNTIME = '<script src="/_/hona.js"></script>'
 WATCH_TTL = 4  # seconds: a tab that polled this recently counts as "already open"
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+ID2_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}__\d{6,12}$")  # trash entry name: <slug>__<unix time>
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 # ── terminal styling ────────────────────────────────────────────────────────
@@ -62,14 +63,43 @@ def slugify(s): return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "unti
 def meta(slug): return read_json(STORE / slug / "meta.json", None) if ID_RE.match(slug or "") else None
 def all_meta():
     out = [m for d in STORE.glob("*") if (m := meta(d.name))]
-    return sorted(out, key=lambda m: m["updated"], reverse=True)
+    return sorted(out, key=lambda m: (not m.get("pinned"), -m["updated"]))
+
+# pages: pin to the top of the index; remove = move to a recoverable trash
+TRASH = HOME / "trash"
+def pin_page(slug, value):
+    m = meta(slug); m["pinned"] = bool(value); write_json(STORE / slug / "meta.json", m)
+def remove_page(slug):
+    TRASH.mkdir(parents=True, exist_ok=True); dest = TRASH / f"{slug}__{int(time.time())}"; shutil.move(str(STORE / slug), str(dest)); return dest.name
+def trash_items():
+    out = []
+    for d in sorted(TRASH.glob("*__*"), reverse=True) if TRASH.is_dir() else []:
+        slug, _, ts = d.name.rpartition("__"); m = read_json(d / "meta.json", {})
+        out.append({"name": d.name, "slug": slug, "title": m.get("title", slug), "removed": int(ts) if ts.isdigit() else 0})
+    return sorted(out, key=lambda x: -x["removed"])
+def restore_page(name):
+    src = TRASH / name
+    if not src.is_dir(): return None
+    slug = name.rpartition("__")[0]; slug = slug if not (STORE / slug).exists() else slug + "-restored"
+    shutil.move(str(src), str(STORE / slug))
+    m = meta(slug)
+    if m and m["slug"] != slug: write_json(STORE / slug / "meta.json", {**m, "slug": slug})
+    return slug
+def purge_page(name):
+    src = TRASH / name
+    if src.is_dir() and TRASH.resolve() in src.resolve().parents: shutil.rmtree(src); return True
+    return False
 
 # comments: list of {id, author, text, quote, parent, ts, resolved}
 def cfile(slug): return STORE / slug / "comments.json"
-def get_comments(slug): return read_json(cfile(slug), [])
+def raw_comments(slug): return read_json(cfile(slug), [])
+def get_comments(slug):
+    """Comments the user can see: deleted threads (and their replies) are hidden."""
+    cs = raw_comments(slug); gone = {x["id"] for x in cs if x.get("deleted")}
+    return [x for x in cs if not x.get("deleted") and x.get("parent") not in gone]
 def add_comment(slug, author, text, quote="", parent=None, anchor=None):
     with locked(cfile(slug)):
-        cs = get_comments(slug)
+        cs = raw_comments(slug)
         if parent is not None and not any(x["id"] == parent for x in cs): parent = None
         cm = {"id": max([x["id"] for x in cs], default=0) + 1, "author": author, "text": text[:8000],
               "quote": (quote or "")[:400], "parent": parent, "ts": time.time(), "resolved": False}
@@ -77,15 +107,23 @@ def add_comment(slug, author, text, quote="", parent=None, anchor=None):
         cm["version"] = cur_version(slug) or None
         cs.append(cm); write_json(cfile(slug), cs)
     return cm
+def set_deleted(slug, cid, value):
+    with locked(cfile(slug)):
+        cs = raw_comments(slug)
+        for x in cs:
+            if x["id"] == cid and not x["parent"]:
+                if value: x["deleted"] = True
+                else: x.pop("deleted", None)
+        write_json(cfile(slug), cs)
 def set_pinned(slug, cid, value):
     with locked(cfile(slug)):
-        cs = get_comments(slug)
+        cs = raw_comments(slug)
         for x in cs:
             if x["id"] == cid and not x["parent"]: x["pinned"] = value
         write_json(cfile(slug), cs)
 def set_resolved(slug, cid, value):
     with locked(cfile(slug)):
-        cs = get_comments(slug)
+        cs = raw_comments(slug)
         for x in cs:
             if x["id"] == cid and not x["parent"]: x["resolved"] = value
         write_json(cfile(slug), cs)
@@ -151,6 +189,23 @@ def current_decision(slug):
 def decision_label(d):
     return {"approve": "APPROVED", "changes": "CHANGES REQUESTED"}.get(d["decision"], d["decision"].upper())
 
+# choices: STORE/<slug>/choices.json [{id, group, value, ts, version}]; value "" clears the pick
+CH_RE = re.compile(r"^[\w .:/+#-]{1,64}$")
+def chfile(slug): return STORE / slug / "choices.json"
+def get_choices(slug): return read_json(chfile(slug), [])
+def add_choice(slug, group, value):
+    with locked(chfile(slug)):
+        es = get_choices(slug); e = {"id": max([x["id"] for x in es], default=0) + 1, "group": group, "value": value, "ts": time.time(), "version": cur_version(slug)}
+        es.append(e); write_json(chfile(slug), es)
+    return e
+def current_choices(slug):
+    out = {}
+    for e in get_choices(slug): out[e["group"]] = e
+    return {g: e for g, e in out.items() if e["value"] != ""}
+def choice_lines(e, version):
+    stale = f" (page is now v{version})" if e["version"] != version else ""
+    return [f"choice: {e['group']} = {e['value'] or '(cleared)'} on v{e['version']}{stale}"]
+
 def notify(title, body):
     if shutil.which("notify-send"):
         subprocess.Popen(["notify-send", "-a", "hona", title, body[:200]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -159,9 +214,26 @@ def notify(title, body):
 HEAD = ('<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
         + ICON + '<link rel=stylesheet href="/_/hona.css">')
 PAGE_SHELL = HEAD + '<title>{{title}}</title><body class="h-page"><main class="h-stack">{{body}}</main></body>'
-INDEX = (HEAD + '<title>hona</title><body class="h-page"><div class="h-wrap">'
+INDEX = (HEAD + '<title>hona</title><style>'
+         '.pg{display:flex;justify-content:space-between;align-items:center;gap:12px}.pg-main{flex:1;min-width:0;color:inherit;text-decoration:none}'
+         '.h-page .pg-main{color:var(--h-text);text-decoration:none}.pg-main:hover strong{color:var(--h-accent)}.pg-side{display:flex;align-items:center;gap:6px;flex:none}'
+         '.pgb{border:1px solid var(--h-line);background:transparent;color:var(--h-muted);border-radius:999px;padding:4px 10px;font:600 12px/1 var(--h-mono);cursor:pointer}'
+         '.pgb:hover{color:var(--h-text);border-color:var(--h-accent)}.pgb.rm:hover{color:var(--h-err);border-color:var(--h-err)}'
+         '.pg.pinned{border-left:3px solid var(--h-accent)}.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--h-text);color:var(--h-bg);'
+         'border-radius:999px;padding:10px 18px;font:600 13px var(--h-mono);display:none;gap:14px;align-items:center}.toast button{all:unset;cursor:pointer;text-decoration:underline}'
+         'details.trash{margin-top:var(--h-8);color:var(--h-muted)}details.trash summary{cursor:pointer;font:600 13px var(--h-mono)}'
+         '.tr{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:var(--h-2) 0;border-bottom:1px solid var(--h-line);font-size:14px}</style>'
+         '<body class="h-page"><div class="h-wrap">'
          '<div class="h-brand"><img src="/_/favicon.svg" alt="">hona</div>'
-         '<p class="h-eyebrow">{{count}} published</p><div class="h-stack">{{items}}</div></div></body>')
+         '<p class="h-eyebrow">{{count}} published</p><div class="h-stack" id="pages">{{items}}</div>{{trash}}</div>'
+         '<div class="toast" id="toast"><span id="tmsg"></span><button id="tundo">undo</button></div>'
+         '<script>(()=>{const post=(u)=>fetch("/api/pages/"+u,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(r=>r.ok?r.json():Promise.reject());'
+         'const toast=(m,undo)=>{const t=document.getElementById("toast");document.getElementById("tmsg").textContent=m;const b=document.getElementById("tundo");b.style.display=undo?"":"none";b.onclick=undo;t.style.display="flex";clearTimeout(window._tt);window._tt=setTimeout(()=>t.style.display="none",8000)};'
+         'document.addEventListener("click",(e)=>{const b=e.target.closest("[data-act]");if(!b)return;e.preventDefault();const card=b.closest("[data-slug]"),slug=card&&card.dataset.slug,act=b.dataset.act;'
+         'if(act==="pin"||act==="unpin")post(slug+"/"+act).then(()=>location.reload());'
+         'if(act==="remove")post(slug+"/remove").then((r)=>{card.style.display="none";toast("Removed "+slug,()=>post(r.name+"/restore").then(()=>location.reload()))});'
+         'if(act==="restore")post(b.dataset.name+"/restore").then(()=>location.reload());'
+         'if(act==="purge"&&confirm("Delete "+b.dataset.name.split("__")[0]+" forever? This cannot be undone."))post(b.dataset.name+"/purge").then(()=>location.reload())})})()</script></body>')
 
 def md_to_html(text, title):
     try:
@@ -228,8 +300,10 @@ class H(BaseHTTPRequestHandler):
                     stale = d["version"] != n; cls = "ok" if d["decision"] == "approve" else "warn"
                     word = "approved" if d["decision"] == "approve" else "changes"; dv = d["version"]
                     return f'<span class="h-badge {cls}" style="{"opacity:.55" if stale else ""}">{word}{f" v{dv}" if stale else ""}</span>'
-                items = "".join(f'<a class="h-card" href="/a/{m["slug"]}" style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · v{cur_version(m["slug"])} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></div>{badge(m)}</a>' for m in ms)
-                return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
+                items = "".join(f'<div class="h-card pg{" pinned" if m.get("pinned") else ""}" data-slug="{m["slug"]}"><a class="pg-main" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · v{cur_version(m["slug"])} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a><div class="pg-side">{badge(m)}<button class="pgb" data-act="{"unpin" if m.get("pinned") else "pin"}">{"unpin" if m.get("pinned") else "pin"}</button><button class="pgb rm" data-act="remove">remove</button></div></div>' for m in ms)
+                tr = trash_items()
+                trash_html = ('<details class="trash"><summary>trash (%d)</summary>' % len(tr) + "".join(f'<div class="tr"><span>{html.escape(t["title"])} <span class="h-eyebrow">{t["slug"]}</span></span><span class="pg-side"><button class="pgb" data-act="restore" data-name="{t["name"]}">restore</button><button class="pgb rm" data-act="purge" data-name="{t["name"]}">delete forever</button></span></div>' for t in tr) + "</details>") if tr else ""
+                return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{trash}}", trash_html).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
             if p[0] == "_" and len(p) == 2 and p[1] in ("favicon.svg", "hona.css", "hona.js") and (ASSETS / p[1]).is_file():
                 ct = {"svg": "image/svg+xml", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}[p[1].rsplit(".", 1)[1]]
                 return self.send(200, (ASSETS / p[1]).read_bytes(), ct)
@@ -243,6 +317,14 @@ class H(BaseHTTPRequestHandler):
                     if f.name == "index.html" and len(p) == 2: return self.send(200, decorate(f.read_text()))
                     return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
             if p[0] == "a" and len(p) == 2 and not meta(p[1]): return self.send(404, "not found")
+        if p[0] == "api" and p[1] == "pages" and len(p) == 4 and method == "POST":
+            name, act = p[2], p[3]
+            if act in ("pin", "unpin") and meta(name): pin_page(name, act == "pin"); return self.js({"ok": True})
+            if act == "remove" and meta(name): return self.js({"name": remove_page(name)})
+            if act == "restore" and ID2_RE.match(name):
+                s = restore_page(name); return self.js({"slug": s}) if s else self.js({"error": "not in trash"}, 404)
+            if act == "purge" and ID2_RE.match(name): return self.js({"ok": purge_page(name)})
+            return self.send(404, "not found")
         if p[0] == "api" and len(p) >= 3 and meta(p[2]):
             return self.api(method, p[1], p[2], p[3:])
         self.send(404, "not found")
@@ -250,7 +332,7 @@ class H(BaseHTTPRequestHandler):
     def api(self, method, kind, slug, rest):
         if kind == "poll" and method == "GET":
             seen[slug] = time.time(); cs = get_comments(slug)
-            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] + (x.get("pinned") is False) for x in cs), "d": len(get_decisions(slug))})
+            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] + (x.get("pinned") is False) for x in cs), "d": len(get_decisions(slug)), "h": len(get_choices(slug))})
         if kind == "seen" and method == "GET": return self.js({"open": time.time() - seen.get(slug, 0) < WATCH_TTL})
         if kind == "decision":
             cur, n = current_decision(slug), cur_version(slug)
@@ -268,6 +350,12 @@ class H(BaseHTTPRequestHandler):
             m = meta(slug); n, _ = commit_version(slug, vh, m["title"]); write_json(STORE / slug / "meta.json", {**m, "updated": time.time(), "version": n}); return self.js({"version": n})
         if kind == "diff" and method == "GET" and len(rest) == 2 and rest[0].isdigit() and rest[1].isdigit():
             ln = text_diff(slug, rest[0], rest[1]); return self.js({"lines": ln}) if ln is not None else self.js({"error": "no such version"}, 404)
+        if kind == "choices":
+            if method == "GET": return self.js({g: {"value": e["value"], "version": e["version"]} for g, e in current_choices(slug).items()})
+            if method == "POST":
+                b = self.body_json(); g, v = str(b.get("group", "")), str(b.get("value", ""))
+                if not CH_RE.match(g) or (v and not CH_RE.match(v)): return self.js({"error": "bad choice"}, 400)
+                e = add_choice(slug, g, v); notify(f"hona · {meta(slug)['title']}", f"{g} = {v or 'cleared'}"); return self.js(e)
         if kind == "comments":
             if method == "GET" and not rest: return self.js(get_comments(slug))
             if method == "POST" and not rest:
@@ -279,6 +367,8 @@ class H(BaseHTTPRequestHandler):
                 notify(f"hona · {meta(slug)['title']}", text); return self.js(cm)
             if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("resolve", "reopen"):
                 set_resolved(slug, int(rest[0]), rest[1] == "resolve"); return self.js({"ok": True})
+            if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("delete", "undelete"):
+                set_deleted(slug, int(rest[0]), rest[1] == "delete"); return self.js({"ok": True})
             if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("pin", "unpin"):
                 set_pinned(slug, int(rest[0]), rest[1] == "pin"); return self.js({"ok": True})
         if kind == "db" and rest and ID_RE.match(rest[0]):
@@ -330,17 +420,19 @@ def lan_url(slug=""):
 def chrome_bin():
     return next((p for p in (shutil.which(c) for c in ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome")) if p), None)
 
-def snap(slug, cid=None, out=None):
+def snap(slug, cid=None, out=None, theme=None):
     """Render the page with annotations drawn on it (headless Chromium). Returns the png path or None."""
     chrome = chrome_bin()
     if not chrome: return None
     ensure_server()
     an = next((x.get("anchor") for x in get_comments(slug) if x["id"] == cid), None) if cid else None
     w = int((an or {}).get("vw") or 1280); h = min(int((an or {}).get("docH") or 1600) + 40, 8000)
+    theme = theme or (an or {}).get("theme") or config().get("snap_theme")  # light | dark | None = system
+    flags = {"light": ["--blink-settings=preferredColorScheme=1"], "dark": ["--blink-settings=preferredColorScheme=0"]}.get(theme, [])
     out = Path(out) if out else HOME / "snaps" / f"{slug}-{cid or 'all'}.png"
     out.parent.mkdir(parents=True, exist_ok=True); out.unlink(missing_ok=True)
     try:
-        subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", f"--window-size={w},{h}",
+        subprocess.run([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", *flags, f"--window-size={w},{h}",
                         "--virtual-time-budget=4000", f"--screenshot={out}", f"{BASE}/a/{slug}?hona_snap={cid or 'all'}"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
     except Exception: return None
@@ -387,7 +479,7 @@ def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False,
     n, changed = commit_version(slug, page, title)
     old = meta(slug) or {}
     write_json(d / "meta.json", {"slug": slug, "title": title, "created": old.get("created", time.time()),
-                                 "updated": time.time() if (changed or not old) else old["updated"], "version": n})
+                                 "updated": time.time() if (changed or not old) else old["updated"], "version": n, "pinned": bool(old.get("pinned"))})
     started = ensure_server(); url = f"{BASE}/a/{slug}"
     try: already = json.load(urllib.request.urlopen(f"{BASE}/api/seen/{slug}", timeout=1))["open"]
     except Exception: already = False
@@ -408,24 +500,26 @@ def feedback(slug, wait=False, timeout=600, all_=False, shots=True):
     def pending():
         st = read_json(cur, {})
         return ([x for x in get_comments(slug) if x["author"] == "you" and x["id"] > st.get("seen", 0)],
-                [d for d in get_decisions(slug) if d["id"] > st.get("dseen", 0)])
-    start = time.time(); items, decs = pending()
+                [d for d in get_decisions(slug) if d["id"] > st.get("dseen", 0)],
+                [e for e in get_choices(slug) if e["id"] > st.get("hseen", 0)])
+    start = time.time(); items, decs, chs = pending()
     if wait:
-        while not items and not decs and time.time() - start < timeout: time.sleep(1); items, decs = pending()
+        while not items and not decs and not chs and time.time() - start < timeout: time.sleep(1); items, decs, chs = pending()
     cs = get_comments(slug)
     root = lambda x: next((r for r in cs if r["id"] == x["parent"]), x) if x["parent"] else x
     show = [x for x in cs if not root(x)["resolved"] or x in items] if all_ else items
     st = read_json(cur, {})
     if items: st["seen"] = max(x["id"] for x in items)
     if decs: st["dseen"] = max(d["id"] for d in decs)
-    if items or decs: write_json(cur, st)
+    if chs: st["hseen"] = max(e["id"] for e in chs)
+    if items or decs or chs: write_json(cur, st)
     sh = {}
     if shots:
         for x in show:
             if needs_shot(x) and not x["parent"]:
                 p = snap(slug, x["id"])
                 if p: sh[x["id"]] = str(p)
-    return {"show": show, "decisions": decs, "current": current_decision(slug), "version": cur_version(slug), "shots": sh}
+    return {"show": show, "decisions": decs, "choices": chs, "current": current_decision(slug), "version": cur_version(slug), "shots": sh}
 
 def item_lines(x, shots):
     q = f' re: "{x["quote"][:80]}"' if x["quote"] else ""
@@ -489,27 +583,47 @@ def cmd_open(args):
 def cmd_rm(args):
     banner("remove")
     if not args or not meta(slugify(args[0])): fail("no such artifact", "Run `hona list` to see slugs.")
-    shutil.rmtree(STORE / slugify(args[0])); print(f"{dim('└')} {green('✔')} removed {args[0]}")
+    n = remove_page(slugify(args[0])); print(f"{dim('└')} {green('✔')} moved {args[0]} to the trash (undo: hona trash restore {n})")
+
+def cmd_pin(args):
+    slug = need_slug(args[0] if args else None); pin_page(slug, True); banner("pin"); print(f"{dim('└')} {green('✔')} {slug} pinned to the top of the index")
+
+def cmd_unpin(args):
+    slug = need_slug(args[0] if args else None); pin_page(slug, False); banner("unpin"); print(f"{dim('└')} {green('✔')} {slug} unpinned")
+
+def cmd_trash(args):
+    """hona trash [restore <name>|empty]: removed pages stay recoverable until emptied."""
+    banner("trash"); tr = trash_items()
+    if args and args[0] == "restore" and len(args) > 1:
+        s = restore_page(args[1]); fail("not in the trash", "See `hona trash`.") if not s else print(f"{dim('└')} {green('✔')} restored as {s}"); return
+    if args and args[0] == "empty":
+        for t in tr: purge_page(t["name"])
+        print(f"{dim('└')} {green('✔')} deleted {len(tr)} page(s) forever"); return
+    if not tr: print(f"{dim('└')} {yellow('!')} trash is empty"); return
+    for t in tr: print(f"{dim('├')} {bold(t['name'])}  {t['title']}  {dim(time.strftime('%b %d %H:%M', time.localtime(t['removed'])))}")
+    print(f"{dim('└')} {green('✔')} {len(tr)} page(s) · restore: {bold('hona trash restore <name>')} · empty: {bold('hona trash empty')}")
 
 def cmd_comments(args):
     """What the agent runs to read feedback. Default: new comments and decisions since last read. --wait blocks until one arrives."""
     flags = {a for a in args if a.startswith("--")}
     slug = need_slug(next((a for a in args if not a.startswith("--")), None))
     f = feedback(slug, wait="--wait" in flags, all_="--all" in flags, shots="--no-shots" not in flags)
-    show, decs = f["show"], f["decisions"]
+    show, decs, chs = f["show"], f["decisions"], f["choices"]
     if "--json" in flags:
-        print(json.dumps({"comments": [{**x, **({"screenshot": f["shots"][x["id"]]} if x["id"] in f["shots"] else {})} for x in show], "decisions": decs, "version": f["version"]}, indent=1))
-        sys.exit(0 if show or decs or "--wait" not in flags else 2)
+        print(json.dumps({"comments": [{**x, **({"screenshot": f["shots"][x["id"]]} if x["id"] in f["shots"] else {})} for x in show], "decisions": decs, "choices": chs, "version": f["version"]}, indent=1))
+        sys.exit(0 if show or decs or chs or "--wait" not in flags else 2)
     if TTY: banner(f"comments · {slug}")
-    if not show and not decs:
+    if not show and not decs and not chs:
         print(f"{dim('└') if TTY else ''} {yellow('!') if TTY else ''} no new comments" + (" (timed out)" if "--wait" in flags else ""))
         sys.exit(2 if "--wait" in flags else 0)
     for d in decs:
         ls = decision_lines(d, f["version"]); print(f"{dim('├') if TTY else ''} {(green if d['decision'] == 'approve' else yellow)(bold(ls[0]))}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
+    for e in chs:
+        print(f"{dim('├') if TTY else ''} {bold(choice_lines(e, f['version'])[0])}")
     for x in show:
         ls = item_lines(x, f["shots"])
         print(f"{dim('├') if TTY else ''} {ls[0].replace(x['author'], bold(x['author']), 1)}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
-    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} comment(s), {len(decs)} decision(s) · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
+    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} comment(s), {len(decs)} decision(s), {len(chs)} choice(s) · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
 
 def cmd_decision(args):
     """hona decision <slug> [--wait]: the user's verdict. Exit 0 approved, 3 changes requested, 4 none yet."""
@@ -562,14 +676,75 @@ def cmd__focus(args):  # internal: poll until a window with this title exists, t
         except Exception: pass
         time.sleep(0.4)
 
+def cmd_choices(args):
+    slug = need_slug(args[0] if args else None); cc = current_choices(slug); banner(f"choices · {slug}")
+    if not cc: print(f"{dim('└')} {yellow('!')} no picks yet"); return
+    for g, e in cc.items(): print(f"{dim('├')} {bold(g)} = {green(e['value'])}  {dim('v' + str(e['version']))}")
+    print(f"{dim('└')} {green('✔')} {len(cc)} group(s)")
+
+def cmd_delete(args):
+    if len(args) < 2 or not args[1].isdigit(): fail("usage: hona delete <slug> <comment-id>", "Undo with `hona undelete <slug> <id>`.")
+    set_deleted(need_slug(args[0]), int(args[1]), True); banner("delete"); print(f"{dim('└')} {green('✔')} deleted #{args[1]} (undo: hona undelete {args[0]} {args[1]})")
+
+def cmd_undelete(args):
+    if len(args) < 2 or not args[1].isdigit(): fail("usage: hona undelete <slug> <comment-id>", "")
+    set_deleted(need_slug(args[0]), int(args[1]), False); banner("undelete"); print(f"{dim('└')} {green('✔')} restored #{args[1]}")
+
+def inline_assets(page, d):
+    """Inline relative css/js/images next to the page so the export is one file."""
+    import base64, mimetypes
+    def read(ref):
+        if re.match(r"^(https?:|data:|//|/|#)", ref): return None
+        f = (d / ref.split("?")[0]).resolve()
+        return f if d.resolve() in f.parents and f.is_file() else None
+    def css(m):
+        f = read(m.group(1)); return f"<style>{f.read_text()}</style>" if f else m.group(0)
+    def js(m):
+        f = read(m.group(1)); return f"<script>{f.read_text().replace('</script', '<\\/script')}</script>" if f else m.group(0)
+    def img(m):
+        f = read(m.group(2)); return m.group(1) + f"data:{mimetypes.guess_type(f.name)[0] or 'application/octet-stream'};base64,{base64.b64encode(f.read_bytes()).decode()}" + m.group(3) if f else m.group(0)
+    page = re.sub(r"""<link[^>]*rel=["']?stylesheet["']?[^>]*href=["']([^"']+)["'][^>]*>""", css, page)
+    page = re.sub(r"""<script[^>]*src=["']([^"']+)["'][^>]*>\s*</script>""", js, page)
+    return re.sub(r"""(<img[^>]*src=["'])([^"']+)(["'])""", img, page)
+
+def build_export(slug, with_comments=True):
+    import base64
+    d = STORE / slug; n = cur_version(slug); page = version_html(slug, n) or (d / "index.html").read_text()
+    page = inline_assets(page, d)
+    page = re.sub(r"""<link[^>]*href=["']/_/hona\.css["'][^>]*>""", lambda m: "<style>" + (ASSETS / "hona.css").read_text() + "</style>", page)
+    icon = '<link rel="icon" href="data:image/svg+xml;base64,' + base64.b64encode((ASSETS / "favicon.svg").read_bytes()).decode() + '">'
+    page = re.sub(r"""<link[^>]*href=["']/_/favicon\.svg["'][^>]*>""", "", page)
+    page = (re.sub(r"<head[^>]*>", lambda m: m.group(0) + icon, page, 1, flags=re.I) if re.search(r"<head", page, re.I) else icon + page)
+    if not with_comments: return page
+    dec = current_decision(slug)
+    data = {"slug": slug, "title": (meta(slug) or {}).get("title", slug), "version": n, "exported": time.time(), "comments": get_comments(slug),
+            "decision": {"current": dec, "version": n, "stale": bool(dec and dec["version"] != n)},
+            "choices": {g: {"value": e["value"], "version": e["version"]} for g, e in current_choices(slug).items()},
+            "data": {f.stem: read_json(f, {}) for f in (d / "data").glob("*.json")} if (d / "data").is_dir() else {}}
+    blob = json.dumps(data).replace("</", "<\\/")
+    js = (ASSETS / "hona.js").read_text().replace("</script", "<\\/script")
+    tail = f"<script>window.__HONA_STATIC__ = {blob};</script><script>{js}</script>"
+    return page.replace("</body>", tail + "</body>", 1) if "</body>" in page else page + tail
+
+def cmd_export(args):
+    """hona export <slug> [--out file.html] [--no-comments]: one standalone HTML file, comments and marks included."""
+    out = args[args.index("--out") + 1] if "--out" in args else None
+    pos = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--out")]
+    slug = need_slug(pos[0] if pos else None); banner(f"export · {slug}")
+    out = Path(out or f"{slug}.html").expanduser(); out.write_text(build_export(slug, "--no-comments" not in args))
+    row("file", cyan(str(out.resolve()))); row("size", f"{out.stat().st_size / 1024:.1f} KB"); row("contents", "page + comments, pins, drawings, decision (read-only)" if "--no-comments" not in args else "page only")
+    print(f"{dim('└')} {green('✔')} done · open it in any browser, no hona needed")
+    if not TTY: print(out.resolve())
+
 def cmd_snap(args):
     """hona snap <slug> [comment-id] [--out file.png]: the page with annotations drawn on it."""
     out = args[args.index("--out") + 1] if "--out" in args else None
-    pos = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--out")]
+    theme = args[args.index("--theme") + 1] if "--theme" in args else None
+    pos = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] not in ("--out", "--theme"))]
     slug = need_slug(pos[0] if pos else None); cid = int(pos[1]) if len(pos) > 1 and pos[1].isdigit() else None
     banner("snap")
     if not chrome_bin(): fail("no Chromium found", "Install chromium or google-chrome so hona can render screenshots.")
-    p = snap(slug, cid, out)
+    p = snap(slug, cid, out, theme)
     if not p: fail("screenshot failed", "Run `hona serve` in a terminal and open the page to check it renders.")
     print(f"{dim('└')} {green('✔')} {cyan(str(p))}"); 
     if not TTY: print(p)
@@ -630,8 +805,9 @@ def mcp_tools():
         {"name": "hona_decision", "description": "The user's current verdict on the page (approved / changes requested) and which version it applies to.", "inputSchema": S(slug=slug)},
         {"name": "hona_list", "description": "All published pages with version, open comments and review status.", "inputSchema": S()},
         {"name": "hona_versions", "description": "Version history of a page, with each version's review status.", "inputSchema": S(slug=slug)},
-        {"name": "hona_snapshot", "description": "Screenshot of the page with the user's pins and drawings drawn on it (all, or one comment id).",
-         "inputSchema": S(slug=slug, comment_id={"type": "integer"})},
+        {"name": "hona_choices", "description": "The user's current picks on option blocks (elements marked data-hona-choice=\"group\" data-value=\"A\"). Picks also arrive through hona_wait_for_feedback.", "inputSchema": S(slug=slug)},
+        {"name": "hona_snapshot", "description": "Screenshot of the page with the user's pins and drawings drawn on it (all, or one comment id). Follows the theme the user was in unless theme is given.",
+         "inputSchema": S(slug=slug, comment_id={"type": "integer"}, theme={"type": "string", "enum": ["light", "dark"]})},
     ]
 
 def mcp_call(name, a):
@@ -656,7 +832,7 @@ def mcp_call(name, a):
     if name == "hona_wait_for_feedback" or name == "hona_feedback":
         slug = sl(); wait = name == "hona_wait_for_feedback"
         f = feedback(slug, wait=wait, timeout=max(1, min(int(a.get("timeout_seconds") or 120), 570)), all_=bool(a.get("all")))
-        lines = [l for d in f["decisions"] for l in decision_lines(d, f["version"])] + [l for x in f["show"] for l in item_lines(x, f["shots"])]
+        lines = [l for d in f["decisions"] for l in decision_lines(d, f["version"])] + [l for e in f["choices"] for l in choice_lines(e, f["version"])] + [l for x in f["show"] for l in item_lines(x, f["shots"])]
         if not lines: return text("no feedback yet" + (" (timed out; call again to keep waiting)" if wait else ""))
         lines.append(f"(page {slug} is at v{f['version']}; reply with hona_reply)")
         return text("\n".join(lines)) + [b for p in f["shots"].values() for b in img(p)]
@@ -672,6 +848,8 @@ def mcp_call(name, a):
             n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]]); d = current_decision(m["slug"])
             rows.append(f"{m['slug']}  v{cur_version(m['slug'])}  {m['title']}" + (f"  [{n} open]" if n else "") + (f"  [{decision_label(d).lower()} v{d['version']}]" if d else ""))
         return text("\n".join(rows) or "nothing published yet")
+    if name == "hona_choices":
+        slug = sl(); cc = current_choices(slug); return text("\n".join(f"{g} = {e['value']}  (v{e['version']})" for g, e in cc.items()) or "no picks yet")
     if name == "hona_versions":
         slug = sl(); rows = []
         for v in reversed(get_versions(slug)):
@@ -679,7 +857,7 @@ def mcp_call(name, a):
             rows.append(f"v{v['n']}  {time.strftime('%b %d %H:%M', time.localtime(v['ts']))}" + (f"  {decision_label(d).lower()}" if d else "") + ("  (current)" if v["n"] == cur_version(slug) else ""))
         return text("\n".join(rows))
     if name == "hona_snapshot":
-        p = snap(sl(), a.get("comment_id")); return (text(str(p)) + img(p)) if p else text("could not render a screenshot (is Chromium installed?)")
+        p = snap(sl(), a.get("comment_id"), None, a.get("theme")); return (text(str(p)) + img(p)) if p else text("could not render a screenshot (is Chromium installed?)")
     return text(f"unknown tool {name}")
 
 def cmd_mcp(_):
@@ -778,14 +956,18 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
   {bold('publish')} <file|-> [--title T] [--slug S] [--no-open]   publish & open (same title = update in place)
   {bold('list')}                                                  everything, with open-comment counts
   {bold('open')} [slug]                                           open one (default: latest)
-  {bold('rm')} <slug>                                             delete one
+  {bold('rm')} <slug>                                             move to the trash (recoverable)
+  {bold('pin')} <slug> · {bold('unpin')} <slug> · {bold('trash')} [restore <name>|empty]   keep favourites on top; manage removed pages
 
   {bold('comments')} [slug] [--wait] [--all] [--json]             read feedback (--wait blocks until a new comment)
   {bold('decision')} <slug> [--wait]                              the user's verdict (exit 0 approved, 3 changes, 4 none)
   {bold('versions')} <slug> · {bold('diff')} <slug> [a] [b] · {bold('restore')} <slug> <n>   history, text diff, roll back
   {bold('focus')} [on|off]                                        bring a newly opened page to the front (Hyprland)
   {bold('mcp-install')} [status]                                  register the MCP tools with Claude Code, OpenCode, Codex
-  {bold('snap')} <slug> [id] [--out f.png]                        screenshot with pins/drawings drawn on it
+  {bold('choices')} <slug>                                        the user's picks on option blocks
+  {bold('delete')} <slug> <id> · {bold('undelete')} <slug> <id>           soft-delete a comment thread (recoverable)
+  {bold('export')} <slug> [--out f.html] [--no-comments]          one standalone file with comments and marks
+  {bold('snap')} <slug> [id] [--out f.png] [--theme light|dark]                        screenshot with pins/drawings drawn on it
   {bold('reply')} <slug> <id> <text>                              answer a comment (shows live in the page)
   {bold('resolve')} <slug> <id>                                   mark a thread done
 
@@ -798,7 +980,7 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
     cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
-            "reply": cmd_reply, "snap": cmd_snap, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
+            "reply": cmd_reply, "snap": cmd_snap, "pin": cmd_pin, "unpin": cmd_unpin, "trash": cmd_trash, "choices": cmd_choices, "delete": cmd_delete, "undelete": cmd_undelete, "export": cmd_export, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
             "focus": cmd_focus, "_focus": cmd__focus, "mcp": cmd_mcp, "mcp-install": cmd_mcpinstall, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)

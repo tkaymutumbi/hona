@@ -5,10 +5,28 @@
    4. window.hona.db — a tiny shared document store for the page
    Everything hona draws lives in shadow roots so artifact CSS can't touch it. */
 (() => {
-  const slug = location.pathname.split("/")[2];
+  const STATIC = window.__HONA_STATIC__ || null;   // exported file: read-only, data embedded
+  const RO = !!STATIC;
+  const slug = STATIC ? STATIC.slug : location.pathname.split("/")[2];
   if (!slug) return;
   const SNAP = new URLSearchParams(location.search).get("hona_snap"); // headless screenshot: show marks only
-  const api = (p, o = {}) =>
+  function staticApi(p, o = {}) {
+    const [kind, , x, y] = p.split("/"), m = (o.method || "GET").toUpperCase(), ok = (v) => Promise.resolve(v);
+    if (kind === "comments" && m === "GET") return ok(STATIC.comments);
+    if (kind === "decision" && m === "GET") return ok(STATIC.decision);
+    if (kind === "choices" && m === "GET") return ok(STATIC.choices);
+    if (kind === "versions") return ok([]);
+    if (kind === "poll") return ok({ v: 1, c: 0, d: 0, h: 0 });
+    if (kind === "db") {  // in-memory only: edits last until the file is closed
+      const coll = (STATIC.data[decodeURIComponent(x)] = STATIC.data[decodeURIComponent(x)] || {}), id = y && decodeURIComponent(y);
+      if (m === "GET" && !id) return ok(Object.entries(coll).map(([k, v]) => (typeof v === "object" && v ? { id: k, ...v } : { id: k, value: v })));
+      if (m === "GET") return id in coll ? ok(coll[id]) : Promise.reject({ status: 404 });
+      if (m === "PUT") { coll[id] = JSON.parse(o.body); return ok({ ok: true }); }
+      if (m === "DELETE") { delete coll[id]; return ok({ ok: true }); }
+    }
+    return Promise.reject({ status: 405 });
+  }
+  const api = STATIC ? staticApi : (p, o = {}) =>
     fetch("/api/" + p, { headers: { "Content-Type": "application/json" }, ...o }).then((r) => (r.ok ? r.json() : Promise.reject(r)));
 
   // ── data store ──────────────────────────────────────────────────────────
@@ -39,7 +57,7 @@
   };
 
   // viewing an older version: just a banner, no annotation tools
-  const OLD = location.pathname.match(/\/v\/(\d+)\/?$/);
+  const OLD = !STATIC && location.pathname.match(/\/v\/(\d+)\/?$/);
   if (OLD) {
     const [, br] = mkHost("position:fixed;z-index:2147483647;top:12px;left:50%;transform:translateX(-50%)", `
       .b{display:flex;gap:10px;align-items:center;padding:8px 8px 8px 16px;background:var(--bg);color:var(--tx);border:1px solid var(--wn);border-radius:999px;box-shadow:0 8px 30px #0005;font:700 12px ui-monospace,monospace}
@@ -52,6 +70,7 @@
   let marksOn = true;
   try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
   let mode = null;                       // null | "pin" | "draw"
+  let choices = {};                      // current picks on option blocks, {group: {value, version}}
   let tmpPin = null, draft = [];         // marks not yet sent
   let flashId = null;                    // comment whose mark is briefly emphasised (go to)
   const roots = () => comments.filter((c) => !c.parent);
@@ -104,7 +123,11 @@
     const t = (el.innerText || el.alt || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 40);
     return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (t ? ` “${t}”` : "");
   };
-  const docSize = () => ({ vw: document.documentElement.clientWidth, docH: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) });
+  const docSize = () => {
+    const dt = document.documentElement.dataset.theme;
+    return { vw: document.documentElement.clientWidth, docH: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+             theme: dt === "light" || dt === "dark" ? dt : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" };
+  };
   function pinPos(an) {
     let el = null; try { el = an.selector && document.querySelector(an.selector); } catch (e) {}
     if (el) { const r = el.getBoundingClientRect(); if (r.width || r.height) return [scrollX + r.left + an.ox * r.width, scrollY + r.top + an.oy * r.height]; }
@@ -216,6 +239,8 @@
     .dk kbd{font:11px ui-monospace,monospace;color:var(--mu);font-weight:400}.dk.on kbd{color:inherit;opacity:.8}
     .dk b{background:var(--tx);color:var(--bg);border-radius:9px;min-width:18px;padding:0 5px;font:700 11px/18px ui-monospace,monospace;text-align:center}.dk b:empty{display:none}
     .dk:hover{border-color:var(--bl)}.dk.on{background:var(--bl);color:var(--bi);border-color:var(--bl)}
+    .t.ro .xr,.t.ro form,.t.ro button.s[data-r],.t.ro button.s[data-v],.t.ro button.s[data-p],.t.ro button.s[data-del],.t.ro .dsep{display:none!important}
+    .undo{display:none;justify-content:space-between;align-items:center;padding:8px 14px;border-top:1px solid var(--ln);background:var(--sf);font:12px ui-monospace,monospace}
     .dk.okb{border-color:var(--ok);color:var(--ok)}.dk.okb.on{background:var(--ok);color:#fff}
     .dk.wnb{border-color:var(--wn);color:var(--wn)}.dk.wnb.on{background:var(--wn);color:#1a1512}
     .dsep{height:1px;width:70%;background:var(--ln);margin:2px 0}
@@ -255,8 +280,9 @@
     .qp button:hover{background:var(--ln);color:var(--tx)}
     .empty{color:var(--mu);text-align:center;padding:20px 0}`, `
     <div class="p" id="p">
-      <h4><span class="tabs"><button class="tab" id="tc" type="button">comments</button><button class="tab" id="tp" type="button">pinned</button><button class="tab" id="th" type="button">history</button></span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
+      <h4><span class="tabs"><button class="tab" id="tc" type="button">comments</button><button class="tab" id="tp" type="button">pinned</button><button class="tab xr" id="th" type="button">history</button></span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
       <div class="l" id="l"></div>
+      <div class="undo" id="undo"><span>Comment deleted</span><button class="s" id="undob" type="button">undo</button></div>
       <form id="f">
         <textarea id="x" placeholder="Comment for the agent… (Ctrl+Enter to send)"></textarea>
         <div class="row"><span class="chip" id="chip"></span><button class="go">send</button></div>
@@ -264,15 +290,15 @@
     </div>
     <div class="wrap">
       <div class="dock">
-        <button class="dk okb" id="dok" type="button" title="Approve this version">approve</button>
-        <button class="dk wnb" id="dch" type="button" title="Request changes">request changes</button>
+        <button class="dk okb xr" id="dok" type="button" title="Approve this version">approve</button>
+        <button class="dk wnb xr" id="dch" type="button" title="Request changes">request changes</button>
         <span class="dsep"></span>
         <button class="dk" id="dcm" type="button">comments <b id="dn"></b><kbd>Alt+C</kbd></button>
         <button class="dk" id="dpd" type="button" title="See and unpin pinned comments">pinned <b id="dpn"></b></button>
-        <button class="dk" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
-        <button class="dk" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
+        <button class="dk xr" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
+        <button class="dk xr" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
         <span class="dsep"></span>
-        <button class="dk" id="dhist" type="button" title="Version history and diff">history <b id="dvn"></b></button>
+        <button class="dk xr" id="dhist" type="button" title="Version history and diff">history <b id="dvn"></b></button>
       </div>
       <span class="dec" id="dec"></span>
       <button class="fab" id="fab" title="hona">
@@ -281,20 +307,25 @@
       </button>
     </div>`);
   const $ = (id) => root.getElementById(id);
-  const tEl = root.querySelector(".t");
+  const tEl = root.querySelector(".t"); tEl.classList.toggle("ro", RO);
   let quote = "", replyTo = null;
   const open = (v) => { const on = v ?? !$("p").classList.contains("open"); $("p").classList.toggle("open", on); tEl.classList.toggle("open", on); if (on) $("x").focus(); };
   const setQuote = (q) => { quote = q; $("chip").innerHTML = q ? `<span class="qp"><span>“${esc(q.slice(0, 60))}”</span><button type="button" id="qx" title="remove quote">✕</button></span>` : ""; };
   $("chip").addEventListener("click", (e) => { if (e.target.id === "qx") setQuote(""); });
 
+  let lastDel = null, undoT = 0;
   let view = "comments", decision = null, versions = [], diffView = null, armed = null;
   const loadDecision = () => api(`decision/${slug}`).then((d) => { decision = d; render(); }).catch(() => {});
   const loadVersions = () => api(`versions/${slug}`).then((v) => { versions = v; render(); }).catch(() => {});
   const T = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const decWord = (d) => (d.decision === "approve" ? "Approved" : "Changes requested");
   const decBanner = () => {
-    const d = decision && decision.current; if (!d) return "";
-    return `<div class="dbn ${d.decision === "approve" ? "" : "wn"} ${decision.stale ? "stale" : ""}">${decWord(d)} on v${d.version}${decision.stale ? ` · v${decision.version} awaits review` : ""}${d.note ? `<div>${esc(d.note)}</div>` : ""}</div>`;
+    let out = STATIC ? `<div class="dbn stale">Exported copy of v${STATIC.version}, ${new Date(STATIC.exported * 1000).toLocaleDateString()}. Read-only.</div>` : "";
+    const d = decision && decision.current;
+    if (d) out += `<div class="dbn ${d.decision === "approve" ? "" : "wn"} ${decision.stale ? "stale" : ""}">${decWord(d)} on v${d.version}${decision.stale ? ` · v${decision.version} awaits review` : ""}${d.note ? `<div>${esc(d.note)}</div>` : ""}</div>`;
+    const g = Object.entries(choices);
+    if (g.length) out += `<div class="dbn">Picked: ${g.map(([k, x]) => esc(k) + " = " + esc(x.value)).join(" · ")}</div>`;
+    return out;
   };
   function renderHistory() {
     if (diffView) {
@@ -348,7 +379,7 @@
       const thread = [r, ...comments.filter((c) => c.parent === r.id)];
       return `<div class="th ${r.resolved ? "done" : ""}" data-t="${r.id}">` + thread.map((c, i) => `<div class="c ${c.author === "agent" ? "agent" : ""}">
         <div class="m"><span>#${c.id} ${esc(c.author)} · ${T(c.ts)}${i === 0 && c.version ? " · v" + c.version : ""}</span>
-        ${i === 0 ? `<span><button class="s" data-r="${r.id}">reply</button> <button class="s" data-v="${r.id}">${r.resolved ? "reopen" : "resolve"}</button></span>` : ""}</div>
+        ${i === 0 ? `<span><button class="s" data-r="${r.id}">reply</button> <button class="s" data-v="${r.id}">${r.resolved ? "reopen" : "resolve"}</button> <button class="s" data-del="${r.id}">delete</button></span>` : ""}</div>
         ${i === 0 ? kindOf(c) : ""}${c.quote ? `<div class="q">${esc(c.quote)}</div>` : ""}<div class="txt">${esc(c.text)}</div></div>`).join("") + `</div>`;
     }).join("") : `<div class="empty">No comments yet.<br>Select text, or use pin / draw.</div>`);
   }
@@ -359,6 +390,11 @@
   $("l").addEventListener("click", (e) => {
     const t = e.target;
     if (t.dataset.g) goTo(+t.dataset.g);
+    if (t.dataset.del) {
+      const id = +t.dataset.del; api(`comments/${slug}/${id}/delete`, { method: "POST", body: "{}" }).then(() => {
+        lastDel = id; $("undo").style.display = "flex"; clearTimeout(undoT); undoT = setTimeout(() => ($("undo").style.display = "none"), 8000); load();
+      });
+    }
     if (t.dataset.back) { diffView = null; render(); }
     if (t.dataset.vv) location.href = +t.dataset.vv === versions[0].n ? `/a/${slug}` : `/a/${slug}/v/${t.dataset.vv}`;
     if (t.dataset.vd) {
@@ -384,6 +420,7 @@
   $("f").addEventListener("submit", (e) => { e.preventDefault(); send(); });
   $("x").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); });
   const tools = (v) => tEl.classList.toggle("tools", v ?? !tEl.classList.contains("tools"));
+  $("undob").addEventListener("click", () => { api(`comments/${slug}/${lastDel}/undelete`, { method: "POST", body: "{}" }).then(() => { $("undo").style.display = "none"; load(); }); });
   $("fab").addEventListener("click", () => { if ($("p").classList.contains("open")) open(false); else tools(); });
   const show = (v) => { view = v; render(); open(true); };
   $("dcm").addEventListener("click", () => { tools(false); show("comments"); });
@@ -446,7 +483,7 @@
   }
   let selPending = null;
   document.addEventListener("mouseup", (e) => {
-    if (e.target === sel || mode) return;
+    if (RO || e.target === sel || mode) return;
     setTimeout(() => {
       const f = fromSelection();
       if (!f) { if (!composing()) cm(""); return; }
@@ -548,27 +585,49 @@
       if (tEl.classList.contains("tools")) { tools(false); return; }
       if ($("p").classList.contains("open")) { open(false); return; }
     }
-    if (!e.altKey || e.ctrlKey || e.metaKey) return;
+    if (!e.altKey || e.ctrlKey || e.metaKey || (RO && e.code !== "KeyC")) return;
     if (e.code === "KeyP") { e.preventDefault(); toggle("pin"); }
     else if (e.code === "KeyM") { e.preventDefault(); toggle("draw"); }
     else if (e.code === "KeyC") {  // selection → popover at it; otherwise toggle the panel
       e.preventDefault(); const f = fromSelection();
-      if (f) compose(f.p, f.rect, "“" + f.p.quote.slice(0, 80) + "”"); else if ($("p").classList.contains("open")) open(false); else show("comments");
+      if (f && !RO) compose(f.p, f.rect, "“" + f.p.quote.slice(0, 80) + "”"); else if ($("p").classList.contains("open")) open(false); else show("comments");
     }
   });
 
+  // ── option blocks: any element with data-hona-choice="group" data-value="A" becomes pickable ──
+  const cs = document.createElement("style");
+  cs.textContent = "[data-hona-choice]{cursor:pointer}[data-hona-choice][data-hona-selected]{outline:3px solid #2f6fed;outline-offset:4px}[data-hona-choice]:focus-visible{outline:2px dashed #2f6fed;outline-offset:4px}";
+  document.documentElement.appendChild(cs);
+  function applyChoices() {
+    document.querySelectorAll("[data-hona-choice]").forEach((el) => {
+      const on = !!(choices[el.dataset.honaChoice] && choices[el.dataset.honaChoice].value === el.dataset.value);
+      el.toggleAttribute("data-hona-selected", on); el.setAttribute("role", "radio"); el.setAttribute("aria-checked", String(on));
+      if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    });
+  }
+  function loadChoices() { return api(`choices/${slug}`).then((m) => { choices = m; applyChoices(); render(); }).catch(() => {}); }
+  function pick(el) {
+    if (RO) return;
+    const g = el.dataset.honaChoice, v = el.dataset.value, same = !!(choices[g] && choices[g].value === v);
+    api(`choices/${slug}`, { method: "POST", body: JSON.stringify({ group: g, value: same ? "" : v }) }).then(() => { loadChoices(); toast(same ? "cleared" : "picked " + v); });
+  }
+  document.addEventListener("click", (e) => { const el = e.target.closest && e.target.closest("[data-hona-choice]"); if (!el || mode) return; e.preventDefault(); pick(el); });
+  document.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches("[data-hona-choice]")) { e.preventDefault(); pick(e.target); } });
+
   // ── live: reload on republish, refresh comments on change ───────────────
-  let v = null, c = null, dv = null;
+  let v = null, c = null, dv = null, hv = null;
   const tick = async () => {
     try {
       const j = await api(`poll/${slug}`);
       if (v && j.v !== v) return location.reload();
       if (c !== null && j.c !== c) load();
       if (dv !== null && j.d !== dv) loadDecision();
-      v = j.v; c = j.c; dv = j.d;
+      if (hv !== null && j.h !== hv) loadChoices();
+      v = j.v; c = j.c; dv = j.d; hv = j.h;
     } catch (e) {}
   };
-  load(); loadDecision(); tick(); setInterval(tick, 1500);
+  load(); loadDecision(); loadChoices();
+  if (!RO) { tick(); setInterval(tick, 1500); }
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
