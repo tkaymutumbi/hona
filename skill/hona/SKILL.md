@@ -19,7 +19,7 @@ MCP tools or the CLI; they do the same thing.
 - **MCP tools, if you have them** (`hona_publish`, `hona_wait_for_feedback`, `hona_reply`, ...): use these. They return
   screenshots as images you can look at directly, and waiting is a single tool call. Tool list: `hona_publish`,
   `hona_wait_for_feedback`, `hona_feedback`, `hona_reply`, `hona_resolve`, `hona_decision`, `hona_list`,
-  `hona_versions`, `hona_choices`, `hona_check`, `hona_snapshot`.
+  `hona_versions`, `hona_choices`, `hona_answer`, `hona_check`, `hona_snapshot`.
 - **CLI otherwise:** `command -v hona`. If missing, tell the user (install: https://github.com/tkaymutumbi/hona) and
   describe the result in the terminal instead. If the MCP tools are missing but the CLI exists, `hona mcp-install`
   registers them (restart the session to load them).
@@ -72,6 +72,19 @@ When you want the user to pick between options (logos, layouts, plans), make eac
 `data-hona-choice="<group>" data-value="<A>"` (and the `h-option` class). They click one; the pick arrives as
 `choice: <group> = <value>` through `hona_wait_for_feedback` / `hona comments --wait`, or any time via `hona_choices` /
 `hona choices <slug>`. One group per question; use clear short values. Prefer this to asking them to type a letter.
+
+## Pages that ask you questions
+
+A page can call `await hona.ask("...")` (or `hona.ask(prompt, {json: true})`) to put a question to you from its own UI,
+for example "suggest names", "summarize this selection", "explain this error". It arrives through
+`hona_wait_for_feedback` / `hona comments --wait` as `ask #N (from the page): ...`. Answer with `hona_answer` /
+`hona answer <slug> <id> "<text>"`, in exactly the format the prompt asked for (plain text, or bare JSON if it said
+JSON). The page is showing a spinner until you do, so answer promptly and do not drop it.
+
+If you publish a page that uses `hona.ask`, you must stay in `hona_wait_for_feedback` while the user explores it, and tell
+them so ("buttons marked 'ask' need me listening; I'm waiting now"). Design such a page to degrade: show a waiting state,
+handle the `timeout` rejection with a plain message, and make every other part of the page work without the agent.
+Write prompts that carry everything needed (the selected text, the options) because you answer from what the prompt says.
 
 ## Writing good pages
 

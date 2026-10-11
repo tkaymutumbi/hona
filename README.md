@@ -48,6 +48,7 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona decision <slug> [--wait]` | the user's verdict (exit 0 approved, 3 changes requested, 4 none yet) |
 | `hona versions <slug>` / `hona diff <slug> [a] [b]` / `hona restore <slug> <n>` | history, text diff, roll back |
 | `hona focus [on\|off]` | bring a newly opened page to the front (Hyprland); reloads never steal focus |
+| `hona asks <slug>` / `hona answer <slug> <id> <text>` | questions a page asked with `hona.ask`, and your replies |
 | `hona choices <slug>` | the user's picks on option blocks |
 | `hona delete <slug> <id>` / `hona undelete` | soft-delete a comment thread |
 | `hona export <slug>` | one standalone HTML file with comments and marks |
@@ -116,6 +117,21 @@ MCP `hona_wait_for_feedback` / `hona_choices`). Clicking the picked option again
   `trash` section, `hona trash`). Nothing is deleted for good until you choose **delete forever** or `hona trash empty`.
 - **Screenshots follow your theme:** pins and drawings remember whether you were in light or dark mode; `hona snap --theme light|dark` overrides it.
 
+### Ask the agent from a page
+
+A page can put a question to the agent and show the answer, the local equivalent of Claude artifacts' `sample`:
+
+```js
+const answer = await hona.ask("Suggest three names for this tool, one per line.");
+const data   = await hona.ask('Reply with JSON {"names": [...]}', { json: true });   // parses the reply, fences allowed
+```
+
+The question reaches the agent as `ask #N` through `hona comments --wait` or the MCP `hona_wait_for_feedback`; it answers with
+`hona answer <slug> <id> "<text>"` or `hona_answer`, and the page's promise resolves. While it waits, the panel shows "Waiting for
+the agent". Rejections carry a `code`: `timeout` (default 3 minutes, set `timeoutMs`), `rate_limited` (20 unanswered at once),
+`bad_json`, `not_available` (exported copies). The agent has to be listening, so pages that use it should say so and show a waiting state.
+`hona asks <slug>` lists questions and answers.
+
 ### Quality check
 
 `hona publish` finishes by rendering the page at desktop (1280px) and phone (390px) widths in light and dark, in headless
@@ -137,7 +153,7 @@ backup kept) and Codex (`~/.codex/config.toml`). The agent then publishes and li
 drawing screenshots arrive as images it can look at:
 
 `hona_publish` · `hona_wait_for_feedback` · `hona_feedback` · `hona_reply` · `hona_resolve` · `hona_decision` ·
-`hona_list` · `hona_versions` · `hona_choices` · `hona_check` · `hona_snapshot`
+`hona_list` · `hona_versions` · `hona_choices` · `hona_answer` · `hona_check` · `hona_snapshot`
 
 Manual config for any other MCP client: command `python3`, args `["/path/to/hona/hona", "mcp"]`.
 

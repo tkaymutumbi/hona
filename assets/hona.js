@@ -78,6 +78,25 @@
       set: (c, id, doc) => api(`${base(c)}/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(doc) }),
       del: (c, id) => api(`${base(c)}/${encodeURIComponent(id)}`, { method: "DELETE" }),
     },
+    // Ask the agent a question. Resolves with its answer (text, or parsed JSON with {json: true}).
+    // The agent must be listening (hona_wait_for_feedback); rejects {code:"timeout"} if it does not answer in time.
+    ask: (prompt, opts = {}) => {
+      if (RO) return Promise.reject({ code: "not_available", message: "this is an exported copy; asking the agent needs live hona" });
+      return api(`asks/${slug}`, { method: "POST", body: JSON.stringify({ prompt: String(prompt) }) }).then((a) => new Promise((res, rej) => {
+        const t0 = Date.now(), limit = opts.timeoutMs ?? 180000;
+        const iv = setInterval(async () => {
+          try {
+            const x = await api(`asks/${slug}/${a.id}`);
+            if (x.status === "answered") {
+              clearInterval(iv);
+              if (!opts.json) return res(x.answer);
+              try { res(JSON.parse(x.answer.replace(/^```(?:json)?\s*|\s*```$/g, ""))); } catch (e) { rej({ code: "bad_json", message: "the agent's answer was not valid JSON", answer: x.answer }); }
+            } else if (Date.now() - t0 > limit) { clearInterval(iv); rej({ code: "timeout", message: "the agent has not answered yet" }); }
+          } catch (e) {}
+        }, 800);
+        if (opts.signal) opts.signal.addEventListener("abort", () => { clearInterval(iv); rej({ code: "aborted" }); });
+      }), (e) => Promise.reject({ code: e && e.status === 429 ? "rate_limited" : "failed", message: e && e.status === 429 ? "too many unanswered questions; wait for the agent" : "could not reach hona" }));
+    },
   };
 
   // keep scroll position and form values across a republish reload
@@ -132,6 +151,7 @@
   try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
   let mode = null;                       // null | "pin" | "draw"
   let choices = {};                      // current picks on option blocks, {group: {value, version}}
+  let asks = [];                         // questions this page asked the agent
   let tmpPin = null, draft = [];         // marks not yet sent
   let flashId = null;                    // comment whose mark is briefly emphasised (go to)
   const roots = () => comments.filter((c) => !c.parent);
@@ -385,6 +405,7 @@
     let out = STATIC ? `<div class="dbn stale">Exported copy of v${STATIC.version}, ${new Date(STATIC.exported * 1000).toLocaleDateString()}. Read-only.</div>` : "";
     const d = decision && decision.current;
     if (d) out += `<div class="dbn ${d.decision === "approve" ? "" : "wn"} ${decision.stale ? "stale" : ""}">${decWord(d)} on v${d.version}${decision.stale ? ` · v${decision.version} awaits review` : ""}${d.note ? `<div>${esc(d.note)}</div>` : ""}</div>`;
+    for (const x of asks.filter((x) => x.status === "pending")) out += `<div class="dbn stale">Waiting for the agent: ${esc(x.prompt.slice(0, 120))}</div>`;
     const g = Object.entries(choices);
     if (g.length) out += `<div class="dbn">Picked: ${g.map(([k, x]) => esc(k) + " = " + esc(x.value)).join(" · ")}</div>`;
     return out;
@@ -675,6 +696,7 @@
       if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
     });
   }
+  function loadAsks() { return api(`asks/${slug}`).then((x) => { asks = x; render(); }).catch(() => {}); }
   function loadChoices() { return api(`choices/${slug}`).then((m) => { choices = m; applyChoices(); render(); }).catch(() => {}); }
   function pick(el) {
     if (RO) return;
@@ -685,7 +707,7 @@
   document.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches && e.target.matches("[data-hona-choice]")) { e.preventDefault(); pick(e.target); } });
 
   // ── live: reload on republish, refresh comments on change ───────────────
-  let v = null, c = null, dv = null, hv = null;
+  let v = null, c = null, dv = null, hv = null, av = null;
   const tick = async () => {
     try {
       const j = await api(`poll/${slug}`);
@@ -693,10 +715,11 @@
       if (c !== null && j.c !== c) load();
       if (dv !== null && j.d !== dv) loadDecision();
       if (hv !== null && j.h !== hv) loadChoices();
-      v = j.v; c = j.c; dv = j.d; hv = j.h;
+      if (av !== null && j.a !== av) loadAsks();
+      v = j.v; c = j.c; dv = j.d; hv = j.h; av = j.a;
     } catch (e) {}
   };
-  load(); loadDecision(); loadChoices();
+  load(); loadDecision(); loadChoices(); loadAsks();
   if (!RO) { tick(); setInterval(tick, 1500); }
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();

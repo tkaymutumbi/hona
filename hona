@@ -206,6 +206,26 @@ def choice_lines(e, version):
     stale = f" (page is now v{version})" if e["version"] != version else ""
     return [f"choice: {e['group']} = {e['value'] or '(cleared)'} on v{e['version']}{stale}"]
 
+# asks: a page asks the agent a question; STORE/<slug>/asks.json [{id, prompt, ts, version, status, answer, answered}]
+def asfile(slug): return STORE / slug / "asks.json"
+def get_asks(slug): return read_json(asfile(slug), [])
+def add_ask(slug, prompt):
+    with locked(asfile(slug)):
+        xs = get_asks(slug)
+        if sum(1 for x in xs if x["status"] == "pending") >= 20: return None
+        a = {"id": max([x["id"] for x in xs], default=0) + 1, "prompt": prompt[:8000], "ts": time.time(), "version": cur_version(slug), "status": "pending", "answer": None, "answered": None}
+        xs.append(a); write_json(asfile(slug), xs)
+    return a
+def answer_ask(slug, aid, answer):
+    with locked(asfile(slug)):
+        xs = get_asks(slug)
+        for x in xs:
+            if x["id"] == aid:
+                x["status"], x["answer"], x["answered"] = "answered", str(answer)[:100_000], time.time(); write_json(asfile(slug), xs); return True
+    return False
+def ask_lines(x):
+    return [f"ask #{x['id']} (from the page, on v{x['version']}): {x['prompt']}", f"  answer with: hona answer <slug> {x['id']} \"<text>\"  (or hona_answer)"]
+
 def notify(title, body):
     if shutil.which("notify-send"):
         subprocess.Popen(["notify-send", "-a", "hona", title, body[:200]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -332,7 +352,7 @@ class H(BaseHTTPRequestHandler):
     def api(self, method, kind, slug, rest):
         if kind == "poll" and method == "GET":
             seen[slug] = time.time(); cs = get_comments(slug)
-            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] + (x.get("pinned") is False) for x in cs), "d": len(get_decisions(slug)), "h": len(get_choices(slug))})
+            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] + (x.get("pinned") is False) for x in cs), "d": len(get_decisions(slug)), "h": len(get_choices(slug)), "a": len(get_asks(slug)) * 1000 + sum(x["status"] == "answered" for x in get_asks(slug))})
         if kind == "seen" and method == "GET": return self.js({"open": time.time() - seen.get(slug, 0) < WATCH_TTL})
         if kind == "decision":
             cur, n = current_decision(slug), cur_version(slug)
@@ -350,6 +370,16 @@ class H(BaseHTTPRequestHandler):
             m = meta(slug); n, _ = commit_version(slug, vh, m["title"]); write_json(STORE / slug / "meta.json", {**m, "updated": time.time(), "version": n}); return self.js({"version": n})
         if kind == "diff" and method == "GET" and len(rest) == 2 and rest[0].isdigit() and rest[1].isdigit():
             ln = text_diff(slug, rest[0], rest[1]); return self.js({"lines": ln}) if ln is not None else self.js({"error": "no such version"}, 404)
+        if kind == "asks":
+            if method == "GET" and not rest: return self.js(get_asks(slug))
+            if method == "GET" and len(rest) == 1 and rest[0].isdigit():
+                x = next((x for x in get_asks(slug) if x["id"] == int(rest[0])), None); return self.js(x) if x else self.js({"error": "not found"}, 404)
+            if method == "POST" and not rest:
+                p = str(self.body_json().get("prompt", "")).strip()
+                if not p: return self.js({"error": "empty prompt"}, 400)
+                a = add_ask(slug, p)
+                if not a: return self.js({"error": "too many unanswered questions; wait for the agent"}, 429)
+                notify(f"hona · {meta(slug)['title']} asks", p); return self.js(a)
         if kind == "choices":
             if method == "GET": return self.js({g: {"value": e["value"], "version": e["version"]} for g, e in current_choices(slug).items()})
             if method == "POST":
@@ -545,10 +575,11 @@ def feedback(slug, wait=False, timeout=600, all_=False, shots=True):
         st = read_json(cur, {})
         return ([x for x in get_comments(slug) if x["author"] == "you" and x["id"] > st.get("seen", 0)],
                 [d for d in get_decisions(slug) if d["id"] > st.get("dseen", 0)],
-                [e for e in get_choices(slug) if e["id"] > st.get("hseen", 0)])
-    start = time.time(); items, decs, chs = pending()
+                [e for e in get_choices(slug) if e["id"] > st.get("hseen", 0)],
+                [x for x in get_asks(slug) if x["id"] > st.get("aseen", 0)])
+    start = time.time(); items, decs, chs, asks = pending()
     if wait:
-        while not items and not decs and not chs and time.time() - start < timeout: time.sleep(1); items, decs, chs = pending()
+        while not items and not decs and not chs and not asks and time.time() - start < timeout: time.sleep(1); items, decs, chs, asks = pending()
     cs = get_comments(slug)
     root = lambda x: next((r for r in cs if r["id"] == x["parent"]), x) if x["parent"] else x
     show = [x for x in cs if not root(x)["resolved"] or x in items] if all_ else items
@@ -556,14 +587,15 @@ def feedback(slug, wait=False, timeout=600, all_=False, shots=True):
     if items: st["seen"] = max(x["id"] for x in items)
     if decs: st["dseen"] = max(d["id"] for d in decs)
     if chs: st["hseen"] = max(e["id"] for e in chs)
-    if items or decs or chs: write_json(cur, st)
+    if asks: st["aseen"] = max(x["id"] for x in asks)
+    if items or decs or chs or asks: write_json(cur, st)
     sh = {}
     if shots:
         for x in show:
             if needs_shot(x) and not x["parent"]:
                 p = snap(slug, x["id"])
                 if p: sh[x["id"]] = str(p)
-    return {"show": show, "decisions": decs, "choices": chs, "current": current_decision(slug), "version": cur_version(slug), "shots": sh}
+    return {"show": show, "decisions": decs, "choices": chs, "asks": asks, "current": current_decision(slug), "version": cur_version(slug), "shots": sh}
 
 def item_lines(x, shots):
     q = f' re: "{x["quote"][:80]}"' if x["quote"] else ""
@@ -658,22 +690,24 @@ def cmd_comments(args):
     flags = {a for a in args if a.startswith("--")}
     slug = need_slug(next((a for a in args if not a.startswith("--")), None))
     f = feedback(slug, wait="--wait" in flags, all_="--all" in flags, shots="--no-shots" not in flags)
-    show, decs, chs = f["show"], f["decisions"], f["choices"]
+    show, decs, chs, asks = f["show"], f["decisions"], f["choices"], f["asks"]
     if "--json" in flags:
-        print(json.dumps({"comments": [{**x, **({"screenshot": f["shots"][x["id"]]} if x["id"] in f["shots"] else {})} for x in show], "decisions": decs, "choices": chs, "version": f["version"]}, indent=1))
-        sys.exit(0 if show or decs or chs or "--wait" not in flags else 2)
+        print(json.dumps({"comments": [{**x, **({"screenshot": f["shots"][x["id"]]} if x["id"] in f["shots"] else {})} for x in show], "decisions": decs, "choices": chs, "asks": asks, "version": f["version"]}, indent=1))
+        sys.exit(0 if show or decs or chs or asks or "--wait" not in flags else 2)
     if TTY: banner(f"comments · {slug}")
-    if not show and not decs and not chs:
+    if not show and not decs and not chs and not asks:
         print(f"{dim('└') if TTY else ''} {yellow('!') if TTY else ''} no new comments" + (" (timed out)" if "--wait" in flags else ""))
         sys.exit(2 if "--wait" in flags else 0)
     for d in decs:
         ls = decision_lines(d, f["version"]); print(f"{dim('├') if TTY else ''} {(green if d['decision'] == 'approve' else yellow)(bold(ls[0]))}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
     for e in chs:
         print(f"{dim('├') if TTY else ''} {bold(choice_lines(e, f['version'])[0])}")
+    for x in asks:
+        ls = ask_lines(x); print(f"{dim('├') if TTY else ''} {cyan(bold(ls[0]))}\n{dim('│') if TTY else ''} {ls[1].replace('<slug>', slug)}")
     for x in show:
         ls = item_lines(x, f["shots"])
         print(f"{dim('├') if TTY else ''} {ls[0].replace(x['author'], bold(x['author']), 1)}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
-    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} comment(s), {len(decs)} decision(s), {len(chs)} choice(s) · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
+    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} comment(s), {len(decs)} decision(s), {len(chs)} choice(s), {len(asks)} question(s) · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
 
 def cmd_decision(args):
     """hona decision <slug> [--wait]: the user's verdict. Exit 0 approved, 3 changes requested, 4 none yet."""
@@ -740,6 +774,20 @@ def cmd__focus(args):  # internal: poll until a window with this title exists, t
                     subprocess.run(["hyprctl", "dispatch", "focuswindow", f"address:{w['address']}"], capture_output=True); return
         except Exception: pass
         time.sleep(0.4)
+
+def cmd_asks(args):
+    slug = need_slug(args[0] if args else None); xs = get_asks(slug); banner(f"asks · {slug}")
+    if not xs: print(f"{dim('└')} {yellow('!')} the page has asked nothing"); return
+    for x in xs:
+        print(f"{dim('├')} #{x['id']} {(green('answered') if x['status'] == 'answered' else yellow('pending'))}  {x['prompt'][:100]}" + (f"\n{dim('│')}   {dim('answer: ' + str(x['answer'])[:100])}" if x["answer"] else ""))
+    print(f"{dim('└')} {green('✔')} {sum(x['status'] == 'pending' for x in xs)} pending · answer: {bold(f'hona answer {slug} <id> \"text\"')}")
+
+def cmd_answer(args):
+    """hona answer <slug> <id> <text...|->: reply to a question a page asked (the page's promise resolves with it)."""
+    if len(args) < 3 or not args[1].isdigit(): fail("usage: hona answer <slug> <ask-id> <text> (or - to read stdin)", "See pending questions with `hona asks <slug>`.")
+    slug = need_slug(args[0]); text = sys.stdin.read() if args[2] == "-" else " ".join(args[2:])
+    if not answer_ask(slug, int(args[1]), text): fail(f"no question #{args[1]}", f"See `hona asks {slug}`.")
+    banner("answer"); print(f"{dim('└')} {green('✔')} answered #{args[1]}")
 
 def cmd_choices(args):
     slug = need_slug(args[0] if args else None); cc = current_choices(slug); banner(f"choices · {slug}")
@@ -872,6 +920,8 @@ def mcp_tools():
         {"name": "hona_decision", "description": "The user's current verdict on the page (approved / changes requested) and which version it applies to.", "inputSchema": S(slug=slug)},
         {"name": "hona_list", "description": "All published pages with version, open comments and review status.", "inputSchema": S()},
         {"name": "hona_versions", "description": "Version history of a page, with each version's review status.", "inputSchema": S(slug=slug)},
+        {"name": "hona_answer", "description": "Answer a question the page asked with hona.ask(). The page's promise resolves with your text, so reply in exactly the format the page expects (plain text or JSON). Questions arrive through hona_wait_for_feedback as 'ask #N'.",
+         "inputSchema": {**S(slug=slug, ask_id={"type": "integer"}, answer={"type": "string"}), "required": ["ask_id", "answer"]}},
         {"name": "hona_choices", "description": "The user's current picks on option blocks (elements marked data-hona-choice=\"group\" data-value=\"A\"). Picks also arrive through hona_wait_for_feedback.", "inputSchema": S(slug=slug)},
         {"name": "hona_snapshot", "description": "Screenshot of the page with the user's pins and drawings drawn on it (all, or one comment id). Follows the theme the user was in unless theme is given.",
          "inputSchema": S(slug=slug, comment_id={"type": "integer"}, theme={"type": "string", "enum": ["light", "dark"]})},
@@ -900,7 +950,7 @@ def mcp_call(name, a):
     if name == "hona_wait_for_feedback" or name == "hona_feedback":
         slug = sl(); wait = name == "hona_wait_for_feedback"
         f = feedback(slug, wait=wait, timeout=max(1, min(int(a.get("timeout_seconds") or 120), 570)), all_=bool(a.get("all")))
-        lines = [l for d in f["decisions"] for l in decision_lines(d, f["version"])] + [l for e in f["choices"] for l in choice_lines(e, f["version"])] + [l for x in f["show"] for l in item_lines(x, f["shots"])]
+        lines = [l for d in f["decisions"] for l in decision_lines(d, f["version"])] + [l for e in f["choices"] for l in choice_lines(e, f["version"])] + [l for x in f["asks"] for l in ask_lines(x)] + [l for x in f["show"] for l in item_lines(x, f["shots"])]
         if not lines: return text("no feedback yet" + (" (timed out; call again to keep waiting)" if wait else ""))
         lines.append(f"(page {slug} is at v{f['version']}; reply with hona_reply)")
         return text("\n".join(lines)) + [b for p in f["shots"].values() for b in img(p)]
@@ -916,6 +966,8 @@ def mcp_call(name, a):
             n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]]); d = current_decision(m["slug"])
             rows.append(f"{m['slug']}  v{cur_version(m['slug'])}  {m['title']}" + (f"  [{n} open]" if n else "") + (f"  [{decision_label(d).lower()} v{d['version']}]" if d else ""))
         return text("\n".join(rows) or "nothing published yet")
+    if name == "hona_answer":
+        slug = sl(); return text("answered" if answer_ask(slug, int(a["ask_id"]), a["answer"]) else "no such question")
     if name == "hona_check":
         return text("\n".join(check_lines(run_check(sl()))))
     if name == "hona_choices":
@@ -1034,6 +1086,7 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
   {bold('versions')} <slug> · {bold('diff')} <slug> [a] [b] · {bold('restore')} <slug> <n>   history, text diff, roll back
   {bold('focus')} [on|off]                                        bring a newly opened page to the front (Hyprland)
   {bold('mcp-install')} [status]                                  register the MCP tools with Claude Code, OpenCode, Codex
+  {bold('asks')} <slug> · {bold('answer')} <slug> <id> <text>             questions a page asked (hona.ask) and your replies
   {bold('choices')} <slug>                                        the user's picks on option blocks
   {bold('delete')} <slug> <id> · {bold('undelete')} <slug> <id>           soft-delete a comment thread (recoverable)
   {bold('export')} <slug> [--out f.html] [--no-comments]          one standalone file with comments and marks
@@ -1052,7 +1105,7 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
     cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
-            "reply": cmd_reply, "snap": cmd_snap, "check": cmd_check, "template": cmd_template, "pin": cmd_pin, "unpin": cmd_unpin, "trash": cmd_trash, "choices": cmd_choices, "delete": cmd_delete, "undelete": cmd_undelete, "export": cmd_export, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
+            "reply": cmd_reply, "snap": cmd_snap, "asks": cmd_asks, "answer": cmd_answer, "check": cmd_check, "template": cmd_template, "pin": cmd_pin, "unpin": cmd_unpin, "trash": cmd_trash, "choices": cmd_choices, "delete": cmd_delete, "undelete": cmd_undelete, "export": cmd_export, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
             "focus": cmd_focus, "_focus": cmd__focus, "mcp": cmd_mcp, "mcp-install": cmd_mcpinstall, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)
