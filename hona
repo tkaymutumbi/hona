@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hona — local artifacts. Publish a page, get a link, open it in the browser,
 collect comments for the agent, keep a little shared data."""
-import fcntl, html, json, mimetypes, os, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, time, urllib.request
+import difflib, fcntl, hashlib, html, json, mimetypes, os, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, time, urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -74,6 +74,7 @@ def add_comment(slug, author, text, quote="", parent=None, anchor=None):
         cm = {"id": max([x["id"] for x in cs], default=0) + 1, "author": author, "text": text[:8000],
               "quote": (quote or "")[:400], "parent": parent, "ts": time.time(), "resolved": False}
         if anchor: cm["anchor"] = anchor
+        cm["version"] = cur_version(slug) or None
         cs.append(cm); write_json(cfile(slug), cs)
     return cm
 def set_pinned(slug, cid, value):
@@ -97,6 +98,59 @@ def db_write(slug, coll, fn):
         d = db_read(slug, coll); out = fn(d); write_json(dfile(slug, coll), d)
     return out
 
+# versions: STORE/<slug>/versions/<n>.html + versions.json [{n, ts, sha, title, size}]
+MAX_VERSIONS = 50
+def vfile(slug): return STORE / slug / "versions.json"
+def get_versions(slug):
+    vs = read_json(vfile(slug), None)
+    if vs is None and (STORE / slug / "index.html").is_file():  # backfill artifacts from before versioning
+        page = (STORE / slug / "index.html").read_text()
+        (STORE / slug / "versions").mkdir(exist_ok=True); (STORE / slug / "versions" / "1.html").write_text(page)
+        m = meta(slug) or {}
+        vs = [{"n": 1, "ts": m.get("updated", time.time()), "sha": hashlib.sha256(page.encode()).hexdigest()[:12], "title": m.get("title", slug), "size": len(page)}]
+        write_json(vfile(slug), vs)
+    return vs or []
+def cur_version(slug): vs = get_versions(slug); return vs[-1]["n"] if vs else 0
+def commit_version(slug, page, title):
+    """Store page as a new version unless identical to the latest. Returns (n, changed)."""
+    d = STORE / slug; d.mkdir(parents=True, exist_ok=True)
+    with locked(vfile(slug)):
+        vs = get_versions(slug); sha = hashlib.sha256(page.encode()).hexdigest()[:12]
+        if vs and vs[-1]["sha"] == sha:
+            (d / "index.html").write_text(page); return vs[-1]["n"], False
+        n = (vs[-1]["n"] if vs else 0) + 1
+        (d / "versions").mkdir(exist_ok=True); (d / "versions" / f"{n}.html").write_text(page)
+        vs.append({"n": n, "ts": time.time(), "sha": sha, "title": title, "size": len(page)})
+        for old in vs[:-MAX_VERSIONS]: (d / "versions" / f"{old['n']}.html").unlink(missing_ok=True)
+        write_json(vfile(slug), vs[-MAX_VERSIONS:]); (d / "index.html").write_text(page)
+    return n, True
+def version_html(slug, n):
+    f = STORE / slug / "versions" / f"{int(n)}.html"; return f.read_text() if f.is_file() else None
+def page_text(page):
+    t = re.sub(r"(?is)<(script|style|noscript).*?</\1>", "", page)
+    t = re.sub(r"(?i)<(br|/p|/div|/li|/tr|/h[1-6]|/section|/article|/pre)[^>]*>", "\n", t)
+    t = html.unescape(re.sub(r"<[^>]+>", " ", t))
+    return [re.sub(r"\s+", " ", ln).strip() for ln in t.split("\n") if ln.strip()]
+def text_diff(slug, a, b):
+    ha, hb = version_html(slug, a), version_html(slug, b)
+    if ha is None or hb is None: return None
+    out = [{"t": ln[0], "s": ln[1:]} for ln in difflib.unified_diff(page_text(ha), page_text(hb), n=0, lineterm="") if ln[:1] in "+-" and ln[:3] not in ("+++", "---")]
+    return out
+
+# decisions: STORE/<slug>/decisions.json [{id, decision: approve|changes, note, ts, version}]
+def dfile_dec(slug): return STORE / slug / "decisions.json"
+def get_decisions(slug): return read_json(dfile_dec(slug), [])
+def add_decision(slug, decision, note=""):
+    with locked(dfile_dec(slug)):
+        ds = get_decisions(slug)
+        d = {"id": max([x["id"] for x in ds], default=0) + 1, "decision": decision, "note": (note or "")[:4000], "ts": time.time(), "version": cur_version(slug)}
+        ds.append(d); write_json(dfile_dec(slug), ds)
+    return d
+def current_decision(slug):
+    ds = get_decisions(slug); return ds[-1] if ds else None
+def decision_label(d):
+    return {"approve": "APPROVED", "changes": "CHANGES REQUESTED"}.get(d["decision"], d["decision"].upper())
+
 def notify(title, body):
     if shutil.which("notify-send"):
         subprocess.Popen(["notify-send", "-a", "hona", title, body[:200]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -117,9 +171,9 @@ def md_to_html(text, title):
         body = "<pre>" + html.escape(text) + "</pre>"
     return PAGE_SHELL.replace("{{title}}", html.escape(title)).replace("{{body}}", body)
 
-def decorate(t):
+def decorate(t, base=None):
     """Add favicon (unless the page has one) and the hona runtime, ahead of the page's own scripts."""
-    pre = (RUNTIME if re.search(r"""rel=["']?icon""", t) else ICON + RUNTIME)
+    pre = (f'<base href="{base}">' if base else "") + (RUNTIME if re.search(r"""rel=["']?icon""", t) else ICON + RUNTIME)
     if re.search(r"<head", t, re.I): return re.sub(r"<head[^>]*>", lambda m: m.group(0) + pre, t, 1, flags=re.I)
     if re.match(r"\s*<!doctype", t, re.I): return re.sub(r"^(\s*<!doctype[^>]*>)", lambda m: m.group(1) + pre, t, 1, flags=re.I)
     return pre + t
@@ -168,12 +222,21 @@ class H(BaseHTTPRequestHandler):
         if method == "GET":
             if p == [""]:
                 ms = all_meta()
-                items = "".join(f'<a class="h-card" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a>' for m in ms)
+                def badge(m):
+                    d = current_decision(m["slug"]); n = cur_version(m["slug"])
+                    if not d: return ""
+                    stale = d["version"] != n; cls = "ok" if d["decision"] == "approve" else "warn"
+                    word = "approved" if d["decision"] == "approve" else "changes"; dv = d["version"]
+                    return f'<span class="h-badge {cls}" style="{"opacity:.55" if stale else ""}">{word}{f" v{dv}" if stale else ""}</span>'
+                items = "".join(f'<a class="h-card" href="/a/{m["slug"]}" style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · v{cur_version(m["slug"])} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></div>{badge(m)}</a>' for m in ms)
                 return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
             if p[0] == "_" and len(p) == 2 and p[1] in ("favicon.svg", "hona.css", "hona.js") and (ASSETS / p[1]).is_file():
                 ct = {"svg": "image/svg+xml", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}[p[1].rsplit(".", 1)[1]]
                 return self.send(200, (ASSETS / p[1]).read_bytes(), ct)
             if p == ["favicon.ico"]: return self.send(200, (ASSETS / "favicon.svg").read_bytes(), "image/svg+xml")
+            if p[0] == "a" and len(p) == 4 and p[2] == "v" and p[3].isdigit() and meta(p[1]):
+                vh = version_html(p[1], p[3])
+                return self.send(200, decorate(vh, base=f"/a/{p[1]}/")) if vh is not None else self.send(404, "no such version")
             if p[0] == "a" and len(p) >= 2 and meta(p[1]):
                 f = ((STORE / p[1] / "/".join(p[2:])) if len(p) > 2 else STORE / p[1] / "index.html").resolve()
                 if STORE.resolve() in f.parents and f.is_file() and f.name not in ("comments.json", "meta.json") and "data" not in f.relative_to(STORE / p[1]).parts[:1]:
@@ -187,8 +250,24 @@ class H(BaseHTTPRequestHandler):
     def api(self, method, kind, slug, rest):
         if kind == "poll" and method == "GET":
             seen[slug] = time.time(); cs = get_comments(slug)
-            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] for x in cs)})
+            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] + (x.get("pinned") is False) for x in cs), "d": len(get_decisions(slug))})
         if kind == "seen" and method == "GET": return self.js({"open": time.time() - seen.get(slug, 0) < WATCH_TTL})
+        if kind == "decision":
+            cur, n = current_decision(slug), cur_version(slug)
+            if method == "GET": return self.js({"current": cur, "version": n, "stale": bool(cur and cur["version"] != n)})
+            if method == "POST":
+                b = self.body_json(); dec = b.get("decision"); note = str(b.get("note") or "").strip()
+                if dec not in ("approve", "changes") or (dec == "changes" and not note): return self.js({"error": "bad decision"}, 400)
+                d = add_decision(slug, dec, note); notify(f"hona · {meta(slug)['title']}", decision_label(d) + (": " + note if note else "")); return self.js(d)
+        if kind == "versions" and method == "GET":
+            ds = get_decisions(slug)
+            return self.js([{**v, "decision": next(({"decision": d["decision"], "note": d["note"]} for d in reversed(ds) if d["version"] == v["n"]), None)} for v in reversed(get_versions(slug))])
+        if kind == "restore" and method == "POST" and len(rest) == 1 and rest[0].isdigit():
+            vh = version_html(slug, rest[0])
+            if vh is None: return self.js({"error": "no such version"}, 404)
+            m = meta(slug); n, _ = commit_version(slug, vh, m["title"]); write_json(STORE / slug / "meta.json", {**m, "updated": time.time(), "version": n}); return self.js({"version": n})
+        if kind == "diff" and method == "GET" and len(rest) == 2 and rest[0].isdigit() and rest[1].isdigit():
+            ln = text_diff(slug, rest[0], rest[1]); return self.js({"lines": ln}) if ln is not None else self.js({"error": "no such version"}, 404)
         if kind == "comments":
             if method == "GET" and not rest: return self.js(get_comments(slug))
             if method == "POST" and not rest:
@@ -280,69 +359,127 @@ def anchor_line(x):
 
 def needs_shot(x): return (x.get("anchor") or {}).get("type") in ("pin", "draw") and x.get("pinned") is not False
 
+# ── core operations (shared by the CLI and the MCP server; they never print) ──
+def need_slug(a):
+    s = slugify(a) if a else (all_meta() or [{}])[0].get("slug")
+    if not s or not meta(s): fail("no such artifact", "Run `hona list` to see slugs.")
+    return s
+
+def focus_window(titles):
+    """Bring the browser window showing this page to the front (Hyprland). Runs detached; returns False if unsupported."""
+    if not (shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")): return False
+    subprocess.Popen([sys.executable, os.path.realpath(__file__), "_focus", *[t for t in titles if t]],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return True
+
+def do_publish(raw, name="page", src=None, title=None, slug=None, no_open=False, no_focus=False, force_md=None):
+    if not title:
+        m = re.search(r"<title>(.*?)</title>", raw, re.S | re.I) or re.search(r"^#\s+(.+)$", raw, re.M)
+        title = html.unescape(m.group(1).strip()) if m else name
+    slug = slugify(slug or title)
+    is_md = force_md if force_md is not None else (bool(src) and Path(src).suffix.lower() in (".md", ".markdown"))
+    page = md_to_html(raw, title) if is_md else raw
+    d = STORE / slug; existed = d.exists(); d.mkdir(parents=True, exist_ok=True)
+    if src and Path(src).parent.resolve() != d and not is_md:  # copy sibling assets for multi-file pages
+        for f in Path(src).parent.iterdir():
+            if f.is_file() and f.suffix.lower() in (".css", ".js", ".png", ".jpg", ".svg", ".webp", ".json") and f.name not in ("meta.json", "comments.json", "versions.json", "decisions.json"):
+                shutil.copy(f, d / f.name)
+    n, changed = commit_version(slug, page, title)
+    old = meta(slug) or {}
+    write_json(d / "meta.json", {"slug": slug, "title": title, "created": old.get("created", time.time()),
+                                 "updated": time.time() if (changed or not old) else old["updated"], "version": n})
+    started = ensure_server(); url = f"{BASE}/a/{slug}"
+    try: already = json.load(urllib.request.urlopen(f"{BASE}/api/seen/{slug}", timeout=1))["open"]
+    except Exception: already = False
+    opened = focused = False
+    if not no_open and not already:
+        opened = open_browser(url)
+        if opened and config().get("focus", True) and not no_focus:
+            tm = re.search(r"<title>(.*?)</title>", page, re.S | re.I)
+            focused = focus_window([html.unescape(tm.group(1).strip()) if tm else "", title])
+    dec = current_decision(slug)
+    return {"slug": slug, "title": title, "url": url, "version": n, "changed": changed, "existed": existed, "bytes": len(raw), "markdown": is_md,
+            "server_started": started, "opened": opened, "reloaded": already, "focused": focused, "decision": dec,
+            "decision_stale": bool(dec and dec["version"] != n), "open_comments": len([x for x in get_comments(slug) if not x["parent"] and not x["resolved"]])}
+
+def feedback(slug, wait=False, timeout=600, all_=False, shots=True):
+    """New user comments and decisions since the agent last looked. wait=True blocks until something arrives."""
+    cur = STORE / slug / "agent_cursor.json"
+    def pending():
+        st = read_json(cur, {})
+        return ([x for x in get_comments(slug) if x["author"] == "you" and x["id"] > st.get("seen", 0)],
+                [d for d in get_decisions(slug) if d["id"] > st.get("dseen", 0)])
+    start = time.time(); items, decs = pending()
+    if wait:
+        while not items and not decs and time.time() - start < timeout: time.sleep(1); items, decs = pending()
+    cs = get_comments(slug)
+    root = lambda x: next((r for r in cs if r["id"] == x["parent"]), x) if x["parent"] else x
+    show = [x for x in cs if not root(x)["resolved"] or x in items] if all_ else items
+    st = read_json(cur, {})
+    if items: st["seen"] = max(x["id"] for x in items)
+    if decs: st["dseen"] = max(d["id"] for d in decs)
+    if items or decs: write_json(cur, st)
+    sh = {}
+    if shots:
+        for x in show:
+            if needs_shot(x) and not x["parent"]:
+                p = snap(slug, x["id"])
+                if p: sh[x["id"]] = str(p)
+    return {"show": show, "decisions": decs, "current": current_decision(slug), "version": cur_version(slug), "shots": sh}
+
+def item_lines(x, shots):
+    q = f' re: "{x["quote"][:80]}"' if x["quote"] else ""
+    par = f" (reply to #{x['parent']})" if x["parent"] else ""
+    out = [f"#{x['id']} {x['author']}{par}{q}{' [resolved]' if x['resolved'] else ''}", f"  {x['text']}"]
+    if anchor_line(x): out.append(f"  {anchor_line(x)}")
+    if x["id"] in shots: out.append(f"  screenshot: {shots[x['id']]}")
+    return out
+
+def decision_lines(d, version):
+    stale = f" (page is now v{version}; this review is out of date)" if d["version"] != version else ""
+    return [f"decision: {decision_label(d)} on v{d['version']}{stale}"] + ([f"  note: {d['note']}"] if d["note"] else [])
+
 # ── commands ────────────────────────────────────────────────────────────────
 def cmd_publish(args):
-    title = slug = None; no_open = False; src = None; i = 0
+    title = slug = None; no_open = no_focus = False; src = None; i = 0
     while i < len(args):
         a = args[i]
         if a in ("-t", "--title"): title = args[i + 1]; i += 2
         elif a in ("-s", "--slug"): slug = args[i + 1]; i += 2
         elif a == "--no-open": no_open = True; i += 1
+        elif a == "--no-focus": no_focus = True; i += 1
         else: src = a; i += 1
     banner("publish")
-    if src is None: fail("no file given", "Usage: hona publish <file.html|file.md|-> [--title T] [--slug S] [--no-open]")
-    if src == "-": raw = sys.stdin.read(); name = "stdin"
+    if src is None: fail("no file given", "Usage: hona publish <file.html|file.md|-> [--title T] [--slug S] [--no-open] [--no-focus]")
+    if src == "-": raw, name, srcp = sys.stdin.read(), "stdin", None
     else:
         p = Path(src)
         if not p.is_file(): fail(f"file not found: {src}", "Check the path, or pipe content with `hona publish -`.")
-        raw = p.read_text(); name = p.stem
-    if not title:
-        m = re.search(r"<title>(.*?)</title>", raw, re.S | re.I) or re.search(r"^#\s+(.+)$", raw, re.M)
-        title = html.unescape(m.group(1).strip()) if m else name
-    slug = slugify(slug or title)
-    is_md = src != "-" and Path(src).suffix.lower() in (".md", ".markdown")
-    page = md_to_html(raw, title) if is_md else raw
-    step(1, 3, "read page", note=f"{len(raw):,} bytes" + (" · markdown" if is_md else ""))
-
-    d = STORE / slug; existed = d.exists(); d.mkdir(parents=True, exist_ok=True)
-    if src != "-" and Path(src).parent.resolve() != d and not is_md:  # copy sibling assets for multi-file pages
-        for f in Path(src).parent.iterdir():
-            if f.is_file() and f.suffix.lower() in (".css", ".js", ".png", ".jpg", ".svg", ".webp", ".json") and f.name not in ("meta.json", "comments.json"):
-                shutil.copy(f, d / f.name)
-    (d / "index.html").write_text(page)
-    created = (meta(slug) or {}).get("created", time.time())
-    write_json(d / "meta.json", {"slug": slug, "title": title, "created": created, "updated": time.time()})
-    step(2, 3, "stored", note="updated in place · comments kept" if existed else "new")
-
-    started = ensure_server()
-    url = f"{BASE}/a/{slug}"
-    try: already = json.load(urllib.request.urlopen(f"{BASE}/api/seen/{slug}", timeout=1))["open"]
-    except Exception: already = False
-    opened = False
-    if not no_open and not already: opened = open_browser(url)
-    step(3, 3, "serving", note="server started" if started else "server running")
+        raw, name, srcp = p.read_text(), p.stem, src
+    r = do_publish(raw, name, srcp, title, slug, no_open, no_focus)
+    step(1, 3, "read page", note=f"{r['bytes']:,} bytes" + (" · markdown" if r["markdown"] else ""))
+    step(2, 3, "stored", note=(f"v{r['version']} · " if r["changed"] else f"unchanged, still v{r['version']} · ") + ("updated in place · comments kept" if r["existed"] else "new"))
+    step(3, 3, "serving", note="server started" if r["server_started"] else "server running")
     print(dim("│"))
-    row("title", bold(title)); row("link", cyan(url))
-    if lan_url(slug): row("lan", cyan(lan_url(slug)))
-    row("browser", green("opened") if opened else (yellow("reloaded existing tab") if already else dim("not opened")))
-    n = len([x for x in get_comments(slug) if not x["parent"] and not x["resolved"]])
-    if n: row("comments", yellow(f"{n} open") + dim(f" · hona comments {slug} --all"))
-    print(f"{dim('└')} {green('✔')} done · next: {bold(f'hona comments {slug} --wait')}")
-    if not TTY: print(url)
+    row("title", bold(r["title"])); row("link", cyan(r["url"])); row("version", f"v{r['version']}")
+    if lan_url(r["slug"]): row("lan", cyan(lan_url(r["slug"])))
+    row("browser", (green("opened") + (dim(" · focused") if r["focused"] else "")) if r["opened"] else (yellow("reloaded existing tab") if r["reloaded"] else dim("not opened")))
+    d = r["decision"]
+    if d: row("review", (yellow if d["decision"] == "changes" else green)(decision_label(d)) + dim(f" on v{d['version']}" + (f" · v{r['version']} not reviewed yet" if r["decision_stale"] else "")))
+    if r["open_comments"]: row("comments", yellow(f"{r['open_comments']} open") + dim(f" · hona comments {r['slug']} --all"))
+    sg = r["slug"]
+    print(f"{dim('└')} {green('✔')} done · next: {bold(f'hona comments {sg} --wait')}")
+    if not TTY: print(r["url"])
 
 def cmd_list(_):
     banner("list"); items = all_meta()
     if not items: print(f"{dim('└')} {yellow('!')} nothing published yet · try {bold('hona publish page.html')}"); return
     w = max(len(m["slug"]) for m in items)
     for m in items:
-        n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]])
-        print(f"{dim('├')} {bold(m['slug'].ljust(w))}  {dim(time.strftime('%b %d %H:%M', time.localtime(m['updated'])))}  {m['title']}" + (f"  {yellow(f'💬 {n}')}" if n else ""))
+        n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]]); d = current_decision(m["slug"]); v = cur_version(m["slug"])
+        tags = (f"  {yellow(f'{n} open')}" if n else "") + (f"  {(green if d['decision'] == 'approve' else yellow)(decision_label(d).lower())}" + (dim(f" (v{d['version']})") if d["version"] != v else "") if d else "")
+        print(f"{dim('├')} {bold(m['slug'].ljust(w))}  {dim('v' + str(v))}  {dim(time.strftime('%b %d %H:%M', time.localtime(m['updated'])))}  {m['title']}{tags}")
     print(f"{dim('└')} {green('✔')} {len(items)} artifact(s) · index: {cyan(BASE)}")
-
-def need_slug(a):
-    s = slugify(a) if a else (all_meta() or [{}])[0].get("slug")
-    if not s or not meta(s): fail("no such artifact", "Run `hona list` to see slugs.")
-    return s
 
 def cmd_open(args):
     banner("open"); slug = need_slug(args[0] if args else None)
@@ -355,42 +492,75 @@ def cmd_rm(args):
     shutil.rmtree(STORE / slugify(args[0])); print(f"{dim('└')} {green('✔')} removed {args[0]}")
 
 def cmd_comments(args):
-    """What the agent runs to read feedback. Default: new comments since last read. --wait blocks until one arrives."""
-    flags = {a for a in args if a.startswith("--") and not a[2:].isdigit()}
-    pos = [a for a in args if not a.startswith("--")]
-    slug = need_slug(pos[0] if pos else None)
-    timeout = 600
-    cur = STORE / slug / "agent_cursor.json"
-    def pending():
-        seen_id = read_json(cur, {"seen": 0})["seen"]
-        return [x for x in get_comments(slug) if x["author"] == "you" and x["id"] > seen_id]
-    start = time.time(); items = pending()
-    if "--wait" in flags:
-        while not items and time.time() - start < timeout: time.sleep(1); items = pending()
-    cs = get_comments(slug)
-    root = lambda x: next((r for r in cs if r["id"] == x["parent"]), x) if x["parent"] else x
-    show = [x for x in cs if not root(x)["resolved"] or x in items] if "--all" in flags else items
-    if items: write_json(cur, {"seen": max(x["id"] for x in items)})
-    shots = {}
-    if "--no-shots" not in flags:
-        for x in show:
-            if needs_shot(x) and not x["parent"]:
-                p = snap(slug, x["id"])
-                if p: shots[x["id"]] = str(p)
+    """What the agent runs to read feedback. Default: new comments and decisions since last read. --wait blocks until one arrives."""
+    flags = {a for a in args if a.startswith("--")}
+    slug = need_slug(next((a for a in args if not a.startswith("--")), None))
+    f = feedback(slug, wait="--wait" in flags, all_="--all" in flags, shots="--no-shots" not in flags)
+    show, decs = f["show"], f["decisions"]
     if "--json" in flags:
-        print(json.dumps([{**x, **({"screenshot": shots[x["id"]]} if x["id"] in shots else {})} for x in show], indent=1))
-        sys.exit(0 if show or "--wait" not in flags else 2)
+        print(json.dumps({"comments": [{**x, **({"screenshot": f["shots"][x["id"]]} if x["id"] in f["shots"] else {})} for x in show], "decisions": decs, "version": f["version"]}, indent=1))
+        sys.exit(0 if show or decs or "--wait" not in flags else 2)
     if TTY: banner(f"comments · {slug}")
-    if not show:
+    if not show and not decs:
         print(f"{dim('└') if TTY else ''} {yellow('!') if TTY else ''} no new comments" + (" (timed out)" if "--wait" in flags else ""))
         sys.exit(2 if "--wait" in flags else 0)
+    for d in decs:
+        ls = decision_lines(d, f["version"]); print(f"{dim('├') if TTY else ''} {(green if d['decision'] == 'approve' else yellow)(bold(ls[0]))}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
     for x in show:
-        q = f' re: "{x["quote"][:80]}"' if x["quote"] else ""
-        par = f" (reply to #{x['parent']})" if x["parent"] else ""
-        print(f"{dim('├') if TTY else ''} #{x['id']} {bold(x['author'])}{par}{q}{' [resolved]' if x['resolved'] else ''}\n{dim('│') if TTY else ''}   {x['text']}")
-        if anchor_line(x): print(f"{dim('│') if TTY else ''}   {dim(anchor_line(x))}")
-        if x["id"] in shots: print(f"{dim('│') if TTY else ''}   {cyan('screenshot: ' + shots[x['id']])}")
-    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} shown · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
+        ls = item_lines(x, f["shots"])
+        print(f"{dim('├') if TTY else ''} {ls[0].replace(x['author'], bold(x['author']), 1)}" + "".join(f"\n{dim('│') if TTY else ''} {l}" for l in ls[1:]))
+    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} comment(s), {len(decs)} decision(s) · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
+
+def cmd_decision(args):
+    """hona decision <slug> [--wait]: the user's verdict. Exit 0 approved, 3 changes requested, 4 none yet."""
+    flags = {a for a in args if a.startswith("--")}; slug = need_slug(next((a for a in args if not a.startswith("--")), None))
+    base_id = max([d["id"] for d in get_decisions(slug)], default=0); start = time.time()
+    if "--wait" in flags:
+        while time.time() - start < 600 and max([d["id"] for d in get_decisions(slug)], default=0) <= base_id: time.sleep(1)
+    d = current_decision(slug); v = cur_version(slug)
+    if not d: print("no decision yet"); sys.exit(4)
+    print("\n".join(decision_lines(d, v))); sys.exit(0 if d["decision"] == "approve" else 3)
+
+def cmd_versions(args):
+    slug = need_slug(args[0] if args else None); banner(f"versions · {slug}")
+    for v in reversed(get_versions(slug)):
+        d = next((x for x in reversed(get_decisions(slug)) if x["version"] == v["n"]), None)
+        print(f"{dim('├')} {bold('v' + str(v['n']))}  {dim(time.strftime('%b %d %H:%M', time.localtime(v['ts'])))}  {dim(str(v['size']) + ' bytes')}" + (f"  {(green if d['decision'] == 'approve' else yellow)(decision_label(d).lower())}" if d else "") + (dim("  (current)") if v["n"] == cur_version(slug) else ""))
+    print(f"{dim('└')} {green('✔')} diff: {bold(f'hona diff {slug} [a] [b]')} · restore: {bold(f'hona restore {slug} <n>')}")
+
+def cmd_restore(args):
+    if len(args) < 2 or not args[1].isdigit(): fail("usage: hona restore <slug> <version>", "See versions with `hona versions <slug>`.")
+    slug = need_slug(args[0]); vh = version_html(slug, args[1])
+    if vh is None: fail(f"no version {args[1]}", f"See `hona versions {slug}`.")
+    m = meta(slug); n, _ = commit_version(slug, vh, m["title"]); write_json(STORE / slug / "meta.json", {**m, "updated": time.time(), "version": n})
+    banner("restore"); print(f"{dim('└')} {green('✔')} v{args[1]} restored as v{n}")
+
+def cmd_diff(args):
+    slug = need_slug(args[0] if args else None); n = cur_version(slug)
+    a = int(args[1]) if len(args) > 1 and args[1].isdigit() else n - 1; b = int(args[2]) if len(args) > 2 and args[2].isdigit() else n
+    ln = text_diff(slug, a, b)
+    if ln is None: fail("no such version", f"See `hona versions {slug}`.")
+    banner(f"diff · {slug} · v{a} to v{b}")
+    if not ln: print(f"{dim('└')} {yellow('!')} no visible text changes (layout or styling only)"); return
+    for x in ln: print(f"{dim('│')} " + (green if x["t"] == "+" else red)(x["t"] + " " + x["s"]))
+    print(f"{dim('└')} {green('✔')} {sum(1 for x in ln if x['t'] == '+')} added, {sum(1 for x in ln if x['t'] == '-')} removed lines")
+
+def cmd_focus(args):
+    banner("focus"); cfg = config()
+    if args and args[0] in ("on", "off"): cfg["focus"] = args[0] == "on"; save_config(cfg)
+    ok = shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    row("focus", green("on") if cfg.get("focus", True) else dim("off")); row("support", green("Hyprland detected") if ok else yellow("not available (needs Hyprland)"))
+    print(f"{dim('└')} {green('✔')} a newly opened page is brought to the front; reloads of an open tab never steal focus")
+
+def cmd__focus(args):  # internal: poll until a window with this title exists, then focus it
+    end = time.time() + 8
+    while time.time() < end:
+        try:
+            for w in json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout or "[]"):
+                if any(t and t.lower() in (w.get("title") or "").lower() for t in args):
+                    subprocess.run(["hyprctl", "dispatch", "focuswindow", f"address:{w['address']}"], capture_output=True); return
+        except Exception: pass
+        time.sleep(0.4)
 
 def cmd_snap(args):
     """hona snap <slug> [comment-id] [--out file.png]: the page with annotations drawn on it."""
@@ -440,6 +610,132 @@ def cmd_lan(args):
         row("url", cyan(lan_url() or "no network found")); row("access", dim("needs the ?t= token in the link; it becomes a cookie"))
     print(f"{dim('└')} {green('✔')} done")
 
+# ── MCP server: lets any MCP-capable agent use hona as tool calls (stdio, no dependencies) ──
+def mcp_tools():
+    S = lambda **p: {"type": "object", "properties": p, "additionalProperties": False}
+    slug = {"type": "string", "description": "Artifact slug (see hona_list). Omit for the most recently published page."}
+    return [
+        {"name": "hona_publish", "description": "Publish a self-contained HTML or Markdown page to the user's local browser and open it. Same title = update in place (comments are kept, a new version is recorded). Give the user the link, then call hona_wait_for_feedback.",
+         "inputSchema": {**S(title={"type": "string", "description": "Short page name; also becomes the slug."}, html={"type": "string", "description": "Full self-contained HTML (inline CSS/JS) or Markdown text."},
+                             file={"type": "string", "description": "Path to a .html or .md file, instead of html."}, markdown={"type": "boolean", "description": "Treat html as Markdown."},
+                             open={"type": "boolean", "description": "Open in the browser (default true). Use false for minor revisions."}), "required": ["title"]}},
+        {"name": "hona_wait_for_feedback", "description": "Block until the user comments, pins, draws or approves/requests changes on a page, then return it. Pin and drawing comments come with a screenshot showing their marks: look at it. Returns 'no feedback yet' after the timeout; call again to keep waiting.",
+         "inputSchema": S(slug=slug, timeout_seconds={"type": "integer", "description": "Default 120, max 570."})},
+        {"name": "hona_feedback", "description": "Non-blocking: new comments and decisions since you last looked (all open threads with all=true).",
+         "inputSchema": S(slug=slug, all={"type": "boolean"})},
+        {"name": "hona_reply", "description": "Reply in a comment thread. Say what you changed or what you assumed.",
+         "inputSchema": {**S(slug=slug, comment_id={"type": "integer"}, text={"type": "string"}), "required": ["comment_id", "text"]}},
+        {"name": "hona_resolve", "description": "Mark a thread resolved, only when the request is clearly done.",
+         "inputSchema": {**S(slug=slug, comment_id={"type": "integer"}), "required": ["comment_id"]}},
+        {"name": "hona_decision", "description": "The user's current verdict on the page (approved / changes requested) and which version it applies to.", "inputSchema": S(slug=slug)},
+        {"name": "hona_list", "description": "All published pages with version, open comments and review status.", "inputSchema": S()},
+        {"name": "hona_versions", "description": "Version history of a page, with each version's review status.", "inputSchema": S(slug=slug)},
+        {"name": "hona_snapshot", "description": "Screenshot of the page with the user's pins and drawings drawn on it (all, or one comment id).",
+         "inputSchema": S(slug=slug, comment_id={"type": "integer"})},
+    ]
+
+def mcp_call(name, a):
+    """Returns a list of MCP content blocks."""
+    import base64
+    text = lambda s: [{"type": "text", "text": s}]
+    img = lambda p: [{"type": "image", "data": base64.b64encode(Path(p).read_bytes()).decode(), "mimeType": "image/png"}] if p and Path(p).is_file() and Path(p).stat().st_size < 4_500_000 else []
+    sl = lambda: need_slug(a.get("slug"))
+    if name == "hona_publish":
+        if a.get("html") is not None: raw, nm, src = a["html"], "page", None
+        elif a.get("file"):
+            p = Path(a["file"]).expanduser()
+            if not p.is_file(): return text(f"file not found: {p}")
+            raw, nm, src = p.read_text(), p.stem, str(p)
+        else: return text("give either html or file")
+        r = do_publish(raw, nm, src, a["title"], None, a.get("open") is False, False, True if a.get("markdown") else None)
+        out = [f"Published \"{r['title']}\" as v{r['version']}{'' if r['changed'] else ' (unchanged)'}: {r['url']}",
+               f"browser: {'opened' if r['opened'] else 'reloaded existing tab' if r['reloaded'] else 'not opened'}", f"slug: {r['slug']}"]
+        if r["decision"]: out += decision_lines(r["decision"], r["version"])
+        out.append("Tell the user the link, then call hona_wait_for_feedback.")
+        return text("\n".join(out))
+    if name == "hona_wait_for_feedback" or name == "hona_feedback":
+        slug = sl(); wait = name == "hona_wait_for_feedback"
+        f = feedback(slug, wait=wait, timeout=max(1, min(int(a.get("timeout_seconds") or 120), 570)), all_=bool(a.get("all")))
+        lines = [l for d in f["decisions"] for l in decision_lines(d, f["version"])] + [l for x in f["show"] for l in item_lines(x, f["shots"])]
+        if not lines: return text("no feedback yet" + (" (timed out; call again to keep waiting)" if wait else ""))
+        lines.append(f"(page {slug} is at v{f['version']}; reply with hona_reply)")
+        return text("\n".join(lines)) + [b for p in f["shots"].values() for b in img(p)]
+    if name == "hona_reply":
+        add_comment(sl(), "agent", a["text"], parent=int(a["comment_id"])); return text("replied")
+    if name == "hona_resolve":
+        set_resolved(sl(), int(a["comment_id"]), True); return text("resolved")
+    if name == "hona_decision":
+        slug = sl(); d = current_decision(slug); return text("\n".join(decision_lines(d, cur_version(slug))) if d else "no decision yet")
+    if name == "hona_list":
+        rows = []
+        for m in all_meta():
+            n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]]); d = current_decision(m["slug"])
+            rows.append(f"{m['slug']}  v{cur_version(m['slug'])}  {m['title']}" + (f"  [{n} open]" if n else "") + (f"  [{decision_label(d).lower()} v{d['version']}]" if d else ""))
+        return text("\n".join(rows) or "nothing published yet")
+    if name == "hona_versions":
+        slug = sl(); rows = []
+        for v in reversed(get_versions(slug)):
+            d = next((x for x in reversed(get_decisions(slug)) if x["version"] == v["n"]), None)
+            rows.append(f"v{v['n']}  {time.strftime('%b %d %H:%M', time.localtime(v['ts']))}" + (f"  {decision_label(d).lower()}" if d else "") + ("  (current)" if v["n"] == cur_version(slug) else ""))
+        return text("\n".join(rows))
+    if name == "hona_snapshot":
+        p = snap(sl(), a.get("comment_id")); return (text(str(p)) + img(p)) if p else text("could not render a screenshot (is Chromium installed?)")
+    return text(f"unknown tool {name}")
+
+def cmd_mcp(_):
+    """stdio MCP server: newline-delimited JSON-RPC on stdin/stdout."""
+    def send(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+    for line in sys.stdin:
+        try: msg = json.loads(line)
+        except Exception: continue
+        mid, method = msg.get("id"), msg.get("method"); params = msg.get("params") or {}
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": params.get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "hona", "version": "0.3.0"}, "instructions": "Publish visual deliverables with hona_publish, then hona_wait_for_feedback; look at any screenshots; hona_reply; republish."}})
+        elif method == "tools/list": send({"jsonrpc": "2.0", "id": mid, "result": {"tools": mcp_tools()}})
+        elif method == "tools/call":
+            try: content, err = mcp_call(params.get("name"), params.get("arguments") or {}), False
+            except SystemExit: content, err = [{"type": "text", "text": "hona: no such page. Use hona_list to see slugs."}], True
+            except Exception as e: content, err = [{"type": "text", "text": f"hona error: {e}"}], True
+            send({"jsonrpc": "2.0", "id": mid, "result": {"content": content, "isError": err}})
+        elif method == "ping": send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif mid is not None: send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}})
+
+def cmd_mcpinstall(args):
+    """hona mcp-install [status]: register the MCP server with Claude Code, OpenCode and Codex."""
+    status = bool(args and args[0] == "status"); me = os.path.realpath(__file__); py = sys.executable
+    banner("mcp " + ("status" if status else "install"))
+    # Claude Code
+    if shutil.which("claude"):
+        have = "hona" in (subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True).stdout or "")
+        if status or have: step(1, 3, "Claude Code", ok=have, note="registered" if have else "not registered")
+        else:
+            r = subprocess.run(["claude", "mcp", "add", "--scope", "user", "hona", "--", py, me, "mcp"], capture_output=True, text=True)
+            step(1, 3, "Claude Code", ok=r.returncode == 0, note="registered (user scope)" if r.returncode == 0 else (r.stderr.strip()[:80] or "claude mcp add failed"))
+    else: step(1, 3, "Claude Code", ok=False, note="`claude` not found")
+    # OpenCode
+    oc = Path.home() / ".config/opencode/opencode.json"
+    if oc.is_file():
+        try: cfg = json.loads(oc.read_text()); have = "hona" in (cfg.get("mcp") or {})
+        except Exception: cfg, have = None, False
+        if cfg is None: step(2, 3, "OpenCode", ok=False, note=f"{oc.name} is not plain JSON; add it by hand (see README)")
+        elif status or have: step(2, 3, "OpenCode", ok=have, note="registered" if have else "not registered")
+        else:
+            bak = oc.with_name("opencode.json.hona.bak")
+            if not bak.exists(): shutil.copy(oc, bak)
+            cfg.setdefault("mcp", {})["hona"] = {"type": "local", "command": [py, me, "mcp"], "enabled": True}
+            oc.write_text(json.dumps(cfg, indent=2) + "\n"); step(2, 3, "OpenCode", note=f"registered (backup: {bak.name})")
+    else: step(2, 3, "OpenCode", ok=False, note="no ~/.config/opencode/opencode.json")
+    # Codex
+    cx = Path.home() / ".codex/config.toml"
+    if cx.parent.is_dir():
+        txt = cx.read_text() if cx.is_file() else ""; have = "[mcp_servers.hona]" in txt
+        if status or have: step(3, 3, "Codex", ok=have, note="registered" if have else "not registered")
+        else:
+            cx.write_text(txt + ("\n" if txt and not txt.endswith("\n") else "") + f'\n[mcp_servers.hona]\ncommand = "{py}"\nargs = ["{me}", "mcp"]\n'); step(3, 3, "Codex", note="registered in config.toml")
+    else: step(3, 3, "Codex", ok=False, note="no ~/.codex")
+    print(f"{dim('│')}\n{dim('└')} {green('✔')} done · restart your agent session to load the hona tools")
+
 def cmd_skill(args):
     """hona skill [install|status]: link the hona skill into Claude Code, OpenCode (via ~/.agents) and Codex."""
     mode = args[0] if args else "status"
@@ -485,6 +781,10 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
   {bold('rm')} <slug>                                             delete one
 
   {bold('comments')} [slug] [--wait] [--all] [--json]             read feedback (--wait blocks until a new comment)
+  {bold('decision')} <slug> [--wait]                              the user's verdict (exit 0 approved, 3 changes, 4 none)
+  {bold('versions')} <slug> · {bold('diff')} <slug> [a] [b] · {bold('restore')} <slug> <n>   history, text diff, roll back
+  {bold('focus')} [on|off]                                        bring a newly opened page to the front (Hyprland)
+  {bold('mcp-install')} [status]                                  register the MCP tools with Claude Code, OpenCode, Codex
   {bold('snap')} <slug> [id] [--out f.png]                        screenshot with pins/drawings drawn on it
   {bold('reply')} <slug> <id> <text>                              answer a comment (shows live in the page)
   {bold('resolve')} <slug> <id>                                   mark a thread done
@@ -498,7 +798,8 @@ HELP = f"""{bold('hona')} {dim('· local artifacts')}
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
     cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
-            "reply": cmd_reply, "snap": cmd_snap, "skill": cmd_skill, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
+            "reply": cmd_reply, "snap": cmd_snap, "skill": cmd_skill, "decision": cmd_decision, "versions": cmd_versions, "restore": cmd_restore, "diff": cmd_diff,
+            "focus": cmd_focus, "_focus": cmd__focus, "mcp": cmd_mcp, "mcp-install": cmd_mcpinstall, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)
     cmds[a[0]](a[1:])

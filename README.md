@@ -45,6 +45,11 @@ ln -s ~/hona/hona ~/.local/bin/hona
 | `hona data <slug> <coll> [get <id>\|set <id> <json>\|del <id>]` | shared data the page can also use |
 | `hona lan [on\|off\|status]` | share on your network, protected by a secret token |
 | `hona skill [install\|status\|uninstall]` | link the agent skill into Claude Code, OpenCode and Codex |
+| `hona decision <slug> [--wait]` | the user's verdict (exit 0 approved, 3 changes requested, 4 none yet) |
+| `hona versions <slug>` / `hona diff <slug> [a] [b]` / `hona restore <slug> <n>` | history, text diff, roll back |
+| `hona focus [on\|off]` | bring a newly opened page to the front (Hyprland); reloads never steal focus |
+| `hona mcp-install [status]` | register the MCP tools with Claude Code, OpenCode and Codex |
+| `hona mcp` | the MCP server itself (stdio; started by your agent) |
 | `hona serve` | run the server in the foreground (it auto-starts otherwise) |
 
 - Pages live in `~/.local/share/hona/artifacts/<slug>/` (override with `HONA_HOME`).
@@ -75,6 +80,25 @@ For the agent, `hona comments` prints where a pin or drawing is (element, select
 screenshot with your marks on it (headless Chromium, saved under `~/.local/share/hona/snaps/`); `--json` includes the
 anchor and the screenshot path. `--no-shots` skips rendering.
 
+### Approve, request changes, versions
+
+Every publish with changed content is a new **version** (the last 50 are kept); an identical republish is a no-op.
+In the tools list, **approve** or **request changes** (with a note) records a decision on the current version. A newer
+version shows the old decision as out of date until you decide again. **history** lists versions with their decisions,
+shows a text **diff** against the previous one, opens an old version read-only, and can **restore** it as a new version.
+`hona decision <slug> --wait` and the MCP `hona_wait_for_feedback` return as soon as you decide.
+
+### MCP
+
+`hona mcp-install` registers a stdio MCP server with Claude Code (user scope), OpenCode (`~/.config/opencode/opencode.json`,
+backup kept) and Codex (`~/.codex/config.toml`). The agent then publishes and listens with tool calls, and pin or
+drawing screenshots arrive as images it can look at:
+
+`hona_publish` · `hona_wait_for_feedback` · `hona_feedback` · `hona_reply` · `hona_resolve` · `hona_decision` ·
+`hona_list` · `hona_versions` · `hona_snapshot`
+
+Manual config for any other MCP client: command `python3`, args `["/path/to/hona/hona", "mcp"]`.
+
 ### Data
 
 Pages can keep small shared state with `window.hona.db` (`list`, `get`, `set`, `del`), e.g.
@@ -95,7 +119,7 @@ hona skill install     # symlinks skill/hona into ~/.claude/skills, ~/.agents/sk
 hona skill status      # check; `hona skill uninstall` removes the links
 ```
 
-The skill is [`skill/hona/SKILL.md`](skill/hona/SKILL.md), a plain `SKILL.md`, so any agent that reads that format can
+The skill (which also tells agents to use no emojis in pages) is [`skill/hona/SKILL.md`](skill/hona/SKILL.md), a plain `SKILL.md`, so any agent that reads that format can
 use it. Restart the agent session after installing.
 
 Pages can opt into the [design system](DESIGN.md) with `<link rel="stylesheet" href="/_/hona.css">`

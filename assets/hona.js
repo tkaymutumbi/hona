@@ -27,8 +27,8 @@
   const boot = () => {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const safeColor = (c) => (/^#[0-9a-f]{3,8}$/i.test(c) ? c : "#e03131");
-  const TOK = `.t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#e8590c;--ai:#fff;--bl:#2f6fed;--bi:#fff}
-    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512;--bl:#5b9dff;--bi:#0b1220}}`;
+  const TOK = `.t{--bg:#faf7f2;--sf:#fff;--tx:#1a1512;--mu:#6f655b;--ln:#e4ddd2;--ac:#e8590c;--ai:#fff;--bl:#2f6fed;--bi:#fff;--ok:#2b8a3e;--wn:#b7791f}
+    @media (prefers-color-scheme:dark){.t{--bg:#141110;--sf:#1c1816;--tx:#f3ece3;--mu:#a1968a;--ln:#2e2823;--ac:#ff7a3d;--ai:#1a1512;--bl:#5b9dff;--bi:#0b1220;--ok:#51cf66;--wn:#fcc419}}`;
   const mkHost = (style, css, html) => {
     const h = document.createElement("div");
     h.style.cssText = style;
@@ -38,6 +38,16 @@
     return [h, r];
   };
 
+  // viewing an older version: just a banner, no annotation tools
+  const OLD = location.pathname.match(/\/v\/(\d+)\/?$/);
+  if (OLD) {
+    const [, br] = mkHost("position:fixed;z-index:2147483647;top:12px;left:50%;transform:translateX(-50%)", `
+      .b{display:flex;gap:10px;align-items:center;padding:8px 8px 8px 16px;background:var(--bg);color:var(--tx);border:1px solid var(--wn);border-radius:999px;box-shadow:0 8px 30px #0005;font:700 12px ui-monospace,monospace}
+      a,button{border:0;border-radius:999px;padding:6px 12px;background:var(--bl);color:var(--bi);font:700 12px ui-monospace,monospace;cursor:pointer;text-decoration:none}
+      button{background:none;color:var(--tx);border:1px solid var(--ln)}`, `<div class="b"><span>Viewing v${OLD[1]}, not the latest</span><a href="/a/${slug}">back to latest</a><button id="rs">restore this version</button></div>`);
+    br.getElementById("rs").addEventListener("click", () => api(`restore/${slug}/${OLD[1]}`, { method: "POST", body: "{}" }).then(() => (location.href = `/a/${slug}`)));
+    return;
+  }
   let comments = [];
   let marksOn = true;
   try { marksOn = localStorage.getItem("hona-marks") !== "off"; } catch (e) {}
@@ -206,13 +216,21 @@
     .dk kbd{font:11px ui-monospace,monospace;color:var(--mu);font-weight:400}.dk.on kbd{color:inherit;opacity:.8}
     .dk b{background:var(--tx);color:var(--bg);border-radius:9px;min-width:18px;padding:0 5px;font:700 11px/18px ui-monospace,monospace;text-align:center}.dk b:empty{display:none}
     .dk:hover{border-color:var(--bl)}.dk.on{background:var(--bl);color:var(--bi);border-color:var(--bl)}
-    .p{position:fixed;right:16px;bottom:72px;width:360px;max-width:calc(100vw - 32px);max-height:70vh;display:none;flex-direction:column;
+    .dk.okb{border-color:var(--ok);color:var(--ok)}.dk.okb.on{background:var(--ok);color:#fff}
+    .dk.wnb{border-color:var(--wn);color:var(--wn)}.dk.wnb.on{background:var(--wn);color:#1a1512}
+    .dsep{height:1px;width:70%;background:var(--ln);margin:2px 0}
+    .dec{position:absolute;z-index:2;left:-3px;bottom:-3px;width:20px;height:20px;border-radius:50%;font:700 10px/16px ui-monospace,monospace;text-align:center;color:#fff;display:none;border:2px solid var(--bg)}
+    .dbn{border:1px solid var(--ln);border-left:3px solid var(--ok);border-radius:8px;padding:8px 10px;font:12px ui-monospace,monospace;background:var(--sf)}
+    .dbn.wn{border-left-color:var(--wn)}.dbn.stale{opacity:.6}.dbn div{margin-top:4px;font:13px ui-sans-serif,system-ui,sans-serif;white-space:pre-wrap}
+    .diff{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;padding:2px 8px;border-radius:4px}
+    .diff.add{background:color-mix(in srgb,var(--ok) 18%,transparent)}.diff.del{background:color-mix(in srgb,#e03131 18%,transparent)}
+    .p{position:fixed;right:16px;bottom:72px;width:380px;max-width:calc(100vw - 32px);max-height:70vh;display:none;flex-direction:column;
        background:var(--bg);color:var(--tx);border:1px solid var(--ln);border-radius:12px;box-shadow:0 12px 40px #0005;overflow:hidden}
     .p.open{display:flex}
     h4{margin:0;padding:12px 14px;border-bottom:1px solid var(--ln);font:700 13px ui-monospace,monospace;display:flex;justify-content:space-between;align-items:center;gap:8px}
     h4 .r{font-weight:400;color:var(--mu);display:flex;gap:10px;align-items:center}
     .tabs{display:flex;gap:4px}
-    .tab{border:0;background:none;color:var(--mu);font:700 13px ui-monospace,monospace;padding:3px 10px;border-radius:999px;cursor:pointer}
+    .tab{border:0;background:none;color:var(--mu);font:700 12px ui-monospace,monospace;padding:3px 8px;border-radius:999px;cursor:pointer}
     .tab:hover{color:var(--tx)}.tab.on{background:var(--bl);color:var(--bi)}
     .l{overflow:auto;padding:10px 14px;display:flex;flex-direction:column;gap:12px;flex:1}
     .th{display:flex;flex-direction:column;gap:6px;border-radius:10px}.th.flash{outline:2px solid var(--bl);outline-offset:3px}
@@ -237,7 +255,7 @@
     .qp button:hover{background:var(--ln);color:var(--tx)}
     .empty{color:var(--mu);text-align:center;padding:20px 0}`, `
     <div class="p" id="p">
-      <h4><span class="tabs"><button class="tab" id="tc" type="button">comments</button><button class="tab" id="tp" type="button">pinned</button></span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
+      <h4><span class="tabs"><button class="tab" id="tc" type="button">comments</button><button class="tab" id="tp" type="button">pinned</button><button class="tab" id="th" type="button">history</button></span><span class="r"><span id="st"></span><button class="s" id="mk" type="button"></button></span></h4>
       <div class="l" id="l"></div>
       <form id="f">
         <textarea id="x" placeholder="Comment for the agent… (Ctrl+Enter to send)"></textarea>
@@ -246,12 +264,18 @@
     </div>
     <div class="wrap">
       <div class="dock">
+        <button class="dk okb" id="dok" type="button" title="Approve this version">approve</button>
+        <button class="dk wnb" id="dch" type="button" title="Request changes">request changes</button>
+        <span class="dsep"></span>
         <button class="dk" id="dcm" type="button">comments <b id="dn"></b><kbd>Alt+C</kbd></button>
         <button class="dk" id="dpd" type="button" title="See and unpin pinned comments">pinned <b id="dpn"></b></button>
         <button class="dk" id="dpin" type="button" title="Drop a pin on the page">pin <kbd>Alt+P</kbd></button>
         <button class="dk" id="ddraw" type="button" title="Draw on the page">draw <kbd>Alt+M</kbd></button>
+        <span class="dsep"></span>
+        <button class="dk" id="dhist" type="button" title="Version history and diff">history <b id="dvn"></b></button>
       </div>
-      <button class="fab" id="fab" title="hona comments">
+      <span class="dec" id="dec"></span>
+      <button class="fab" id="fab" title="hona">
         <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="17" fill="none" stroke="#1a1512" stroke-width="6"/><circle cx="32" cy="32" r="6.5" fill="#1a1512"/></svg>
         <span class="n" id="n"></span>
       </button>
@@ -263,7 +287,26 @@
   const setQuote = (q) => { quote = q; $("chip").innerHTML = q ? `<span class="qp"><span>“${esc(q.slice(0, 60))}”</span><button type="button" id="qx" title="remove quote">✕</button></span>` : ""; };
   $("chip").addEventListener("click", (e) => { if (e.target.id === "qx") setQuote(""); });
 
-  let view = "comments";
+  let view = "comments", decision = null, versions = [], diffView = null, armed = null;
+  const loadDecision = () => api(`decision/${slug}`).then((d) => { decision = d; render(); }).catch(() => {});
+  const loadVersions = () => api(`versions/${slug}`).then((v) => { versions = v; render(); }).catch(() => {});
+  const T = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const decWord = (d) => (d.decision === "approve" ? "Approved" : "Changes requested");
+  const decBanner = () => {
+    const d = decision && decision.current; if (!d) return "";
+    return `<div class="dbn ${d.decision === "approve" ? "" : "wn"} ${decision.stale ? "stale" : ""}">${decWord(d)} on v${d.version}${decision.stale ? ` · v${decision.version} awaits review` : ""}${d.note ? `<div>${esc(d.note)}</div>` : ""}</div>`;
+  };
+  function renderHistory() {
+    if (diffView) {
+      $("l").innerHTML = `<div class="m"><button class="s" data-back="1">back to history</button><span>v${diffView.a} to v${diffView.b}</span></div>` +
+        (diffView.lines.length ? diffView.lines.map((x) => `<div class="diff ${x.t === "+" ? "add" : "del"}">${x.t} ${esc(x.s)}</div>`).join("") : `<div class="empty">No visible text changes (layout or styling only).</div>`);
+      return;
+    }
+    $("l").innerHTML = decBanner() + (versions.length ? versions.map((v, i) => `<div class="c"><div class="m"><span>v${v.n}${i === 0 ? " · current" : ""} · ${T(v.ts)} · ${Math.round(v.size / 1024 * 10) / 10} KB</span>
+      <span><button class="s" data-vv="${v.n}">view</button>${versions[i + 1] ? ` <button class="s" data-vd="${v.n}">diff</button>` : ""}${i ? ` <button class="s" data-vr="${v.n}">${armed === v.n ? "sure?" : "restore"}</button>` : ""}</span></div>
+      ${v.decision ? `<span class="kind" style="background:var(--${v.decision.decision === "approve" ? "ok" : "wn"});color:${v.decision.decision === "approve" ? "#fff" : "#1a1512"}">${v.decision.decision === "approve" ? "approved" : "changes requested"}</span>` : ""}
+      ${v.decision && v.decision.note ? `<div class="txt">${esc(v.decision.note)}</div>` : ""}</div>`).join("") : `<div class="empty">No history yet.</div>`);
+  }
   const pinLabel = (c) => {
     const a = anchorOf(c);
     if (a.type === "pin") return `pin · ${esc(a.label || "")}`;
@@ -291,17 +334,23 @@
     const pinned = rs.filter((c) => anchorOf(c) && c.pinned !== false).length;
     $("n").textContent = open_ || ""; $("dn").textContent = open_ || ""; $("dpn").textContent = pinned || "";
     $("st").textContent = view === "pinned" ? `${pinned} pinned` : comments.length ? `${open_} open` : "";
-    $("tc").classList.toggle("on", view === "comments"); $("tp").classList.toggle("on", view === "pinned");
+    $("tc").classList.toggle("on", view === "comments"); $("tp").classList.toggle("on", view === "pinned"); $("th").classList.toggle("on", view === "history");
     $("f").style.display = view === "comments" ? "" : "none";
+    const dc = decision && decision.current, fresh = dc && !decision.stale;
+    $("dok").classList.toggle("on", !!(fresh && dc.decision === "approve")); $("dch").classList.toggle("on", !!(fresh && dc.decision === "changes"));
+    $("dok").textContent = fresh && dc.decision === "approve" ? "approved" : "approve"; $("dch").textContent = fresh && dc.decision === "changes" ? "changes requested" : "request changes";
+    const dd = $("dec"); dd.style.display = fresh ? "block" : "none"; if (fresh) { dd.textContent = dc.decision === "approve" ? "ok" : "!"; dd.style.background = dc.decision === "approve" ? "var(--ok)" : "var(--wn)"; dd.style.color = dc.decision === "approve" ? "#fff" : "#1a1512"; }
+    $("dvn").textContent = decision && decision.version > 1 ? "v" + decision.version : "";
+    if (view === "history") return renderHistory();
     $("mk").textContent = marksOn ? "marks on" : "marks off";
     if (view === "pinned") return renderPinned();
-    $("l").innerHTML = rs.length ? rs.map((r) => {
+    $("l").innerHTML = decBanner() + (rs.length ? rs.map((r) => {
       const thread = [r, ...comments.filter((c) => c.parent === r.id)];
       return `<div class="th ${r.resolved ? "done" : ""}" data-t="${r.id}">` + thread.map((c, i) => `<div class="c ${c.author === "agent" ? "agent" : ""}">
-        <div class="m"><span>#${c.id} ${esc(c.author)} · ${new Date(c.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        <div class="m"><span>#${c.id} ${esc(c.author)} · ${T(c.ts)}${i === 0 && c.version ? " · v" + c.version : ""}</span>
         ${i === 0 ? `<span><button class="s" data-r="${r.id}">reply</button> <button class="s" data-v="${r.id}">${r.resolved ? "reopen" : "resolve"}</button></span>` : ""}</div>
         ${i === 0 ? kindOf(c) : ""}${c.quote ? `<div class="q">${esc(c.quote)}</div>` : ""}<div class="txt">${esc(c.text)}</div></div>`).join("") + `</div>`;
-    }).join("") : `<div class="empty">No comments yet.<br>Select text, or use pin / draw.</div>`;
+    }).join("") : `<div class="empty">No comments yet.<br>Select text, or use pin / draw.</div>`);
   }
   focusThread = (id) => {
     view = "comments"; render(); open(true); const el = $("l").querySelector(`[data-t="${id}"]`); if (!el) return;
@@ -310,6 +359,13 @@
   $("l").addEventListener("click", (e) => {
     const t = e.target;
     if (t.dataset.g) goTo(+t.dataset.g);
+    if (t.dataset.back) { diffView = null; render(); }
+    if (t.dataset.vv) location.href = +t.dataset.vv === versions[0].n ? `/a/${slug}` : `/a/${slug}/v/${t.dataset.vv}`;
+    if (t.dataset.vd) {
+      const i = versions.findIndex((v) => v.n === +t.dataset.vd), prev = versions[i + 1]; if (!prev) return;
+      api(`diff/${slug}/${prev.n}/${t.dataset.vd}`).then((d) => { diffView = { a: prev.n, b: +t.dataset.vd, lines: d.lines }; render(); });
+    }
+    if (t.dataset.vr) { const n = +t.dataset.vr; if (armed === n) { armed = null; api(`restore/${slug}/${n}`, { method: "POST", body: "{}" }).then(loadVersions); } else { armed = n; render(); setTimeout(() => { if (armed === n) { armed = null; render(); } }, 3000); } }
     if (t.dataset.p) { const c = comments.find((c) => c.id === +t.dataset.p);
       api(`comments/${slug}/${c.id}/${c.pinned === false ? "pin" : "unpin"}`, { method: "POST", body: "{}" }).then(load); }
     if (t.dataset.r) { replyTo = +t.dataset.r; $("x").placeholder = "Reply…"; $("x").focus(); }
@@ -332,6 +388,10 @@
   const show = (v) => { view = v; render(); open(true); };
   $("dcm").addEventListener("click", () => { tools(false); show("comments"); });
   $("dpd").addEventListener("click", () => { tools(false); show("pinned"); });
+  $("th").addEventListener("click", () => { view = "history"; diffView = null; loadVersions(); render(); });
+  $("dhist").addEventListener("click", () => { tools(false); view = "history"; diffView = null; loadVersions(); render(); open(true); });
+  $("dok").addEventListener("click", () => { tools(false); api(`decision/${slug}`, { method: "POST", body: JSON.stringify({ decision: "approve" }) }).then(() => { loadDecision(); toast("approved"); }); });
+  $("dch").addEventListener("click", () => { tools(false); compose({ decision: "changes" }, { left: innerWidth - 350, top: innerHeight - 120, bottom: innerHeight - 120 }, "request changes · what should change?"); });
   $("tc").addEventListener("click", () => { view = "comments"; render(); }); $("tp").addEventListener("click", () => { view = "pinned"; render(); });
   document.addEventListener("mousedown", (e) => { if (!e.composedPath().includes(host)) tools(false); });
   const baseLoad = load;
@@ -354,13 +414,17 @@
     <form class="pop" id="pf"><span class="q" id="pq"></span>
       <textarea id="px" placeholder="Comment for the agent…"></textarea>
       <div class="row"><span class="hint">Enter send · Esc cancel</span><button class="go">send</button></div></form>
-    <div class="ok" id="ok">✔ sent</div>`);
+    <div class="ok" id="ok">sent</div>`);
   const st = sr.querySelector(".t");
   let pending = null, anchorRect = null;
   const cm = (m) => { st.className = "t" + (m ? " m-" + m : ""); sel.style.display = m ? "block" : "none"; };
   const composing = () => st.classList.contains("m-pop");
   function finish() {  // discard unsent marks and close
     tmpPin = null; draft = []; pending = null; cm(""); renderMarks();
+  }
+  function toast(msg) {
+    anchorRect = { left: innerWidth - 180, top: innerHeight - 70, bottom: innerHeight - 70 };
+    sr.getElementById("ok").textContent = msg; cm("done"); place(); setTimeout(() => cm(""), 1300);
   }
   function place() {
     if (!anchorRect) return;
@@ -394,8 +458,11 @@
   sr.getElementById("pb").addEventListener("click", () => selPending && compose(selPending.p, selPending.rect, "“" + selPending.p.quote.slice(0, 80) + "”"));
   async function sendPop() {
     const x = sr.getElementById("px"), text = x.value.trim(); if (!text || !pending) return;
-    await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: pending.quote || "", anchor: pending.anchor || undefined }) });
-    x.value = ""; tmpPin = null; draft = []; pending = null; cm("done"); place(); load(); getSelection().removeAllRanges(); setTimeout(() => cm(""), 1100);
+    const isDec = !!pending.decision;
+    if (isDec) await api(`decision/${slug}`, { method: "POST", body: JSON.stringify({ decision: pending.decision, note: text }) });
+    else await api(`comments/${slug}`, { method: "POST", body: JSON.stringify({ text, quote: pending.quote || "", anchor: pending.anchor || undefined }) });
+    sr.getElementById("ok").textContent = isDec ? "changes requested" : "sent";
+    x.value = ""; tmpPin = null; draft = []; pending = null; cm("done"); place(); isDec ? loadDecision() : load(); getSelection().removeAllRanges(); setTimeout(() => cm(""), 1100);
   }
   sr.getElementById("pf").addEventListener("submit", (e) => { e.preventDefault(); sendPop(); });
   sr.getElementById("px").addEventListener("keydown", (e) => {
@@ -491,16 +558,17 @@
   });
 
   // ── live: reload on republish, refresh comments on change ───────────────
-  let v = null, c = null;
+  let v = null, c = null, dv = null;
   const tick = async () => {
     try {
       const j = await api(`poll/${slug}`);
       if (v && j.v !== v) return location.reload();
       if (c !== null && j.c !== c) load();
-      v = j.v; c = j.c;
+      if (dv !== null && j.d !== dv) loadDecision();
+      v = j.v; c = j.c; dv = j.d;
     } catch (e) {}
   };
-  load(); tick(); setInterval(tick, 1500);
+  load(); loadDecision(); tick(); setInterval(tick, 1500);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
