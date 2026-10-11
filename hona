@@ -1,41 +1,106 @@
 #!/usr/bin/env python3
-"""hona — local artifacts. Publish an HTML/Markdown page, get a link, open it in the browser."""
-import html, json, os, re, shutil, subprocess, sys, time, urllib.request
+"""hona — local artifacts. Publish a page, get a link, open it in the browser,
+collect comments for the agent, keep a little shared data."""
+import fcntl, html, json, mimetypes, os, re, secrets, shutil, signal, socket, socketserver, subprocess, sys, time, urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("HONA_PORT", "4747"))
 HOME = Path(os.environ.get("HONA_HOME", Path.home() / ".local/share/hona"))
 STORE = HOME / "artifacts"
+CONFIG = HOME / "config.json"
+PIDFILE = HOME / "server.pid"
 BASE = f"http://localhost:{PORT}"
 ASSETS = Path(os.path.realpath(__file__)).parent / "assets"
 ICON = '<link rel="icon" type="image/svg+xml" href="/_/favicon.svg">'
+RUNTIME = '<script src="/_/hona.js" defer></script>'
 WATCH_TTL = 4  # seconds: a tab that polled this recently counts as "already open"
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 # ── terminal styling ────────────────────────────────────────────────────────
 TTY = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 def c(code, s): return f"\033[{code}m{s}\033[0m" if TTY else s
 bold = lambda s: c("1", s); dim = lambda s: c("2", s)
 green = lambda s: c("32", s); yellow = lambda s: c("33", s); red = lambda s: c("31", s); cyan = lambda s: c("36", s)
-def banner(task):
-    print(f"{cyan('◆')} {bold('hona')} {dim('· local artifacts ·')} {task}\n{dim('│')}")
+def banner(task): print(f"{cyan('◆')} {bold('hona')} {dim('· local artifacts ·')} {task}\n{dim('│')}")
 def step(n, total, label, ok=True, note=""):
-    mark = green("✔") if ok else yellow("!")
-    print(f"{dim('├')} {mark} {dim(f'({n}/{total})')} {label}" + (f"  {dim(note)}" if note else ""))
+    print(f"{dim('├')} {green('✔') if ok else yellow('!')} {dim(f'({n}/{total})')} {label}" + (f"  {dim(note)}" if note else ""))
 def row(label, value): print(f"{dim('│')}   {dim(label.ljust(8))} {value}")
 def fail(msg, hint):
     print(f"{dim('└')} {red('✖')} {bold(msg)}\n    {hint}", file=sys.stderr); sys.exit(1)
 
-# ── store ───────────────────────────────────────────────────────────────────
-def slugify(s): return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "untitled"
+# ── config, files, locking ──────────────────────────────────────────────────
+def config():
+    try: return json.loads(CONFIG.read_text())
+    except Exception: return {"lan": False}
 
-def meta(slug):
-    try: return json.loads((STORE / slug / "meta.json").read_text())
+def save_config(cfg):
+    HOME.mkdir(parents=True, exist_ok=True); CONFIG.write_text(json.dumps(cfg)); CONFIG.chmod(0o600)
+
+def lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("10.255.255.255", 1)); ip = s.getsockname()[0]; s.close(); return ip
     except Exception: return None
 
+@contextmanager
+def locked(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX); yield
+
+def read_json(path, default):
+    try: return json.loads(path.read_text())
+    except Exception: return default
+
+def write_json(path, data):
+    tmp = path.with_suffix(".tmp"); tmp.write_text(json.dumps(data, indent=1)); os.replace(tmp, path)
+
+def slugify(s): return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "untitled"
+def meta(slug): return read_json(STORE / slug / "meta.json", None) if ID_RE.match(slug or "") else None
 def all_meta():
     out = [m for d in STORE.glob("*") if (m := meta(d.name))]
     return sorted(out, key=lambda m: m["updated"], reverse=True)
+
+# comments: list of {id, author, text, quote, parent, ts, resolved}
+def cfile(slug): return STORE / slug / "comments.json"
+def get_comments(slug): return read_json(cfile(slug), [])
+def add_comment(slug, author, text, quote="", parent=None):
+    with locked(cfile(slug)):
+        cs = get_comments(slug)
+        if parent is not None and not any(x["id"] == parent for x in cs): parent = None
+        cm = {"id": max([x["id"] for x in cs], default=0) + 1, "author": author, "text": text[:8000],
+              "quote": (quote or "")[:400], "parent": parent, "ts": time.time(), "resolved": False}
+        cs.append(cm); write_json(cfile(slug), cs)
+    return cm
+def set_resolved(slug, cid, value):
+    with locked(cfile(slug)):
+        cs = get_comments(slug)
+        for x in cs:
+            if x["id"] == cid and not x["parent"]: x["resolved"] = value
+        write_json(cfile(slug), cs)
+
+# data: STORE/<slug>/data/<collection>.json = {id: doc}
+def dfile(slug, coll): return STORE / slug / "data" / f"{coll}.json"
+def db_read(slug, coll): return read_json(dfile(slug, coll), {})
+def db_write(slug, coll, fn):
+    with locked(dfile(slug, coll)):
+        d = db_read(slug, coll); out = fn(d); write_json(dfile(slug, coll), d)
+    return out
+
+def notify(title, body):
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-a", "hona", title, body[:200]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# ── pages ───────────────────────────────────────────────────────────────────
+HEAD = ('<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
+        + ICON + '<link rel=stylesheet href="/_/hona.css">')
+PAGE_SHELL = HEAD + '<title>{{title}}</title><body class="h-page"><main class="h-stack">{{body}}</main></body>'
+INDEX = (HEAD + '<title>hona</title><body class="h-page"><div class="h-wrap">'
+         '<div class="h-brand"><img src="/_/favicon.svg" alt="">hona</div>'
+         '<p class="h-eyebrow">{{count}} published</p><div class="h-stack">{{items}}</div></div></body>')
 
 def md_to_html(text, title):
     try:
@@ -45,73 +110,131 @@ def md_to_html(text, title):
         body = "<pre>" + html.escape(text) + "</pre>"
     return PAGE_SHELL.replace("{{title}}", html.escape(title)).replace("{{body}}", body)
 
-HEAD = ('<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
-        + ICON + '<link rel=stylesheet href="/_/hona.css">')
-PAGE_SHELL = HEAD + '<title>{{title}}</title><body class="h-page"><main class="h-stack">{{body}}</main></body>'
-
-RELOAD = """<script>(()=>{const s=location.pathname.split('/')[2];let v=null;
-const tick=async()=>{try{const r=await fetch('/api/poll/'+s);const j=await r.json();if(v&&j.v!==v)location.reload();v=j.v}catch(e){}};
-tick();setInterval(tick,1500)})()</script>"""
-
-INDEX = (HEAD + '<title>hona</title><body class="h-page"><div class="h-wrap">'
-         '<div class="h-brand"><img src="/_/favicon.svg" alt="">hona</div>'
-         '<p class="h-eyebrow">{{count}} published</p><div class="h-stack">{{items}}</div></div></body>')
+def decorate(t):
+    if not re.search(r"""rel=["']?icon""", t):
+        if re.search(r"<head", t, re.I): t = re.sub(r"<head[^>]*>", lambda m: m.group(0) + ICON, t, 1, flags=re.I)
+        elif re.match(r"\s*<!doctype", t, re.I): t = re.sub(r"^(\s*<!doctype[^>]*>)", lambda m: m.group(1) + ICON, t, 1, flags=re.I)
+        else: t = ICON + t
+    return t.replace("</body>", RUNTIME + "</body>") if "</body>" in t else t + RUNTIME
 
 # ── server ──────────────────────────────────────────────────────────────────
 seen = {}  # slug -> last poll timestamp
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def send(self, code, body, ctype="text/html; charset=utf-8"):
+    def send(self, code, body, ctype="text/html; charset=utf-8", headers=()):
         b = body.encode() if isinstance(body, str) else body
         self.send_response(code); self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b))); self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in headers: self.send_header(k, v)
         self.end_headers(); self.wfile.write(b)
-    def do_GET(self):
-        p = self.path.split("?")[0].strip("/").split("/")
-        if p == [""]:
-            ms = all_meta()
-            items = "".join(f'<a class="h-card" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a>' for m in ms)
-            return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
-        if p[0] == "_" and len(p) == 2 and p[1] in ("favicon.svg", "hona.css") and (ASSETS / p[1]).is_file():
-            return self.send(200, (ASSETS / p[1]).read_bytes(), "image/svg+xml" if p[1].endswith("svg") else "text/css; charset=utf-8")
-        if p == ["favicon.ico"]:
-            return self.send(200, (ASSETS / "favicon.svg").read_bytes(), "image/svg+xml")
-        if p[0] == "api" and p[1] == "poll" and len(p) == 3:
-            seen[p[2]] = time.time(); m = meta(p[2])
-            return self.send(200, json.dumps({"v": m and m["updated"]}), "application/json")
-        if p[0] == "api" and p[1] == "seen" and len(p) == 3:
-            return self.send(200, json.dumps({"open": time.time() - seen.get(p[2], 0) < WATCH_TTL}), "application/json")
-        if p[0] == "a" and len(p) >= 2 and meta(p[1]):
-            f = (STORE / p[1] / "/".join(p[2:])) if len(p) > 2 else STORE / p[1] / "index.html"
-            f = f.resolve()
-            if STORE.resolve() in f.parents and f.is_file():
-                if f.name == "index.html":
-                    t = f.read_text()
-                    if 'rel="icon"' not in t and "rel=icon" not in t and "rel='icon'" not in t:
-                        t = re.sub(r"<head[^>]*>", lambda m: m.group(0) + ICON, t, 1, re.I) if re.search(r"<head", t, re.I) else re.sub(r"^(\s*<!doctype[^>]*>)", lambda m: m.group(1) + ICON, t, 1, flags=re.I) if re.match(r"\s*<!doctype", t, re.I) else ICON + t
-                    return self.send(200, t.replace("</body>", RELOAD + "</body>") if "</body>" in t else t + RELOAD)
-                import mimetypes
-                return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+    def js(self, obj, code=200): self.send(code, json.dumps(obj), "application/json")
+    def body_json(self):
+        try: return json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 1_000_000)) or b"{}")
+        except Exception: return {}
+
+    def guard(self, write):
+        """Stop other websites (CSRF / DNS rebinding) and, on LAN, anyone without the token."""
+        cfg = config(); host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        if self.client_address[0] in LOOPBACK:
+            if host not in ("localhost", "127.0.0.1", "::1"): self.send(421, "bad host"); return False
+        else:
+            q = parse_qs(urlparse(self.path).query).get("t", [""])[0]
+            ck = (self.headers.get("Cookie") or "")
+            tok = cfg.get("token", "")
+            if not (cfg.get("lan") and tok and (secrets.compare_digest(q, tok) or f"hona_t={tok}" in ck.replace(" ", ""))):
+                self.send(401, "hona: token required"); return False
+        if write:
+            o = self.headers.get("Origin")
+            if o and urlparse(o).netloc != self.headers.get("Host"): self.send(403, "cross-origin"); return False
+        return True
+
+    def route(self, method):
+        if not self.guard(method != "GET"): return
+        u = urlparse(self.path); p = u.path.strip("/").split("/")
+        cookie = []
+        tq = parse_qs(u.query).get("t", [""])[0]
+        if tq and self.client_address[0] not in LOOPBACK:  # first LAN visit: swap ?t= for a cookie
+            return self.send(302, "", headers=[("Location", u.path), ("Set-Cookie", f"hona_t={tq}; Path=/; HttpOnly; SameSite=Strict")])
+
+        if method == "GET":
+            if p == [""]:
+                ms = all_meta()
+                items = "".join(f'<a class="h-card" href="/a/{m["slug"]}"><strong>{html.escape(m["title"])}</strong><div class="h-eyebrow">{m["slug"]} · {time.strftime("%b %d %H:%M", time.localtime(m["updated"]))}</div></a>' for m in ms)
+                return self.send(200, INDEX.replace("{{count}}", str(len(ms))).replace("{{items}}", items or '<div class="h-card">nothing published yet — run <code>hona publish page.html</code></div>'))
+            if p[0] == "_" and len(p) == 2 and p[1] in ("favicon.svg", "hona.css", "hona.js") and (ASSETS / p[1]).is_file():
+                ct = {"svg": "image/svg+xml", "css": "text/css; charset=utf-8", "js": "text/javascript; charset=utf-8"}[p[1].rsplit(".", 1)[1]]
+                return self.send(200, (ASSETS / p[1]).read_bytes(), ct)
+            if p == ["favicon.ico"]: return self.send(200, (ASSETS / "favicon.svg").read_bytes(), "image/svg+xml")
+            if p[0] == "a" and len(p) >= 2 and meta(p[1]):
+                f = ((STORE / p[1] / "/".join(p[2:])) if len(p) > 2 else STORE / p[1] / "index.html").resolve()
+                if STORE.resolve() in f.parents and f.is_file() and f.name not in ("comments.json", "meta.json") and "data" not in f.relative_to(STORE / p[1]).parts[:1]:
+                    if f.name == "index.html" and len(p) == 2: return self.send(200, decorate(f.read_text()))
+                    return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+            if p[0] == "a" and len(p) == 2 and not meta(p[1]): return self.send(404, "not found")
+        if p[0] == "api" and len(p) >= 3 and meta(p[2]):
+            return self.api(method, p[1], p[2], p[3:])
         self.send(404, "not found")
 
+    def api(self, method, kind, slug, rest):
+        if kind == "poll" and method == "GET":
+            seen[slug] = time.time(); cs = get_comments(slug)
+            return self.js({"v": meta(slug)["updated"], "c": len(cs) * 1000 + sum(x["resolved"] for x in cs)})
+        if kind == "seen" and method == "GET": return self.js({"open": time.time() - seen.get(slug, 0) < WATCH_TTL})
+        if kind == "comments":
+            if method == "GET" and not rest: return self.js(get_comments(slug))
+            if method == "POST" and not rest:
+                b = self.body_json(); text = str(b.get("text", "")).strip()
+                if not text: return self.js({"error": "empty"}, 400)
+                par = b.get("parent"); cm = add_comment(slug, "you", text, str(b.get("quote") or ""), par if isinstance(par, int) else None)
+                notify(f"hona · {meta(slug)['title']}", text); return self.js(cm)
+            if method == "POST" and len(rest) == 2 and rest[0].isdigit() and rest[1] in ("resolve", "reopen"):
+                set_resolved(slug, int(rest[0]), rest[1] == "resolve"); return self.js({"ok": True})
+        if kind == "db" and rest and ID_RE.match(rest[0]):
+            coll = rest[0]
+            if method == "GET" and len(rest) == 1: return self.js([{"id": k, **v} if isinstance(v, dict) else {"id": k, "value": v} for k, v in db_read(slug, coll).items()])
+            if len(rest) == 2 and ID_RE.match(rest[1]):
+                did = rest[1]
+                if method == "GET":
+                    d = db_read(slug, coll); return self.js(d[did]) if did in d else self.js({"error": "not found"}, 404)
+                if method == "PUT": doc = self.body_json(); db_write(slug, coll, lambda d: d.__setitem__(did, doc)); return self.js({"ok": True})
+                if method == "DELETE": db_write(slug, coll, lambda d: d.pop(did, None)); return self.js({"ok": True})
+        self.send(404, "not found")
+
+    def do_GET(self): self.route("GET")
+    def do_POST(self): self.route("POST")
+    def do_PUT(self): self.route("PUT")
+    def do_DELETE(self): self.route("DELETE")
+
 def server_up():
-    try: urllib.request.urlopen(f"{BASE}/api/seen/x", timeout=0.5); return True
+    try: urllib.request.urlopen(f"{BASE}/_/favicon.svg", timeout=0.5); return True
     except Exception: return False
 
 def ensure_server():
     if server_up(): return False
-    subprocess.Popen([sys.executable, __file__, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen([sys.executable, os.path.realpath(__file__), "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(30):
         time.sleep(0.1)
         if server_up(): return True
     fail("server did not start", f"Run `hona serve` in a terminal to see the error (port {PORT} busy? set HONA_PORT).")
+
+def stop_server():
+    try: os.kill(int(PIDFILE.read_text()), signal.SIGTERM)
+    except Exception: pass
+    for _ in range(30):
+        if not server_up(): return
+        time.sleep(0.1)
 
 def open_browser(url):
     for cmd in (["omarchy-launch-browser", url], ["xdg-open", url]):
         if shutil.which(cmd[0]):
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True); return True
     return False
+
+def lan_url(slug=""):
+    cfg = config(); ip = lan_ip()
+    return f"http://{ip}:{PORT}/{'a/' + slug if slug else ''}?t={cfg['token']}" if cfg.get("lan") and ip else None
 
 # ── commands ────────────────────────────────────────────────────────────────
 def cmd_publish(args):
@@ -138,14 +261,14 @@ def cmd_publish(args):
     step(1, 3, "read page", note=f"{len(raw):,} bytes" + (" · markdown" if is_md else ""))
 
     d = STORE / slug; existed = d.exists(); d.mkdir(parents=True, exist_ok=True)
-    if src != "-" and Path(src).parent.resolve() != d:  # copy sibling assets for multi-file pages
+    if src != "-" and Path(src).parent.resolve() != d and not is_md:  # copy sibling assets for multi-file pages
         for f in Path(src).parent.iterdir():
-            if f.is_file() and f.suffix.lower() in (".css", ".js", ".png", ".jpg", ".svg", ".webp", ".json") and not is_md:
+            if f.is_file() and f.suffix.lower() in (".css", ".js", ".png", ".jpg", ".svg", ".webp", ".json") and f.name not in ("meta.json", "comments.json"):
                 shutil.copy(f, d / f.name)
     (d / "index.html").write_text(page)
-    created = meta(slug)["created"] if existed and meta(slug) else time.time()
-    (d / "meta.json").write_text(json.dumps({"slug": slug, "title": title, "created": created, "updated": time.time()}))
-    step(2, 3, "stored", note="updated in place" if existed else "new")
+    created = (meta(slug) or {}).get("created", time.time())
+    write_json(d / "meta.json", {"slug": slug, "title": title, "created": created, "updated": time.time()})
+    step(2, 3, "stored", note="updated in place · comments kept" if existed else "new")
 
     started = ensure_server()
     url = f"{BASE}/a/{slug}"
@@ -156,8 +279,11 @@ def cmd_publish(args):
     step(3, 3, "serving", note="server started" if started else "server running")
     print(dim("│"))
     row("title", bold(title)); row("link", cyan(url))
+    if lan_url(slug): row("lan", cyan(lan_url(slug)))
     row("browser", green("opened") if opened else (yellow("reloaded existing tab") if already else dim("not opened")))
-    print(f"{dim('└')} {green('✔')} done · next: {bold('hona list')}")
+    n = len([x for x in get_comments(slug) if not x["parent"] and not x["resolved"]])
+    if n: row("comments", yellow(f"{n} open") + dim(f" · hona comments {slug} --all"))
+    print(f"{dim('└')} {green('✔')} done · next: {bold(f'hona comments {slug} --wait')}")
     if not TTY: print(url)
 
 def cmd_list(_):
@@ -165,12 +291,17 @@ def cmd_list(_):
     if not items: print(f"{dim('└')} {yellow('!')} nothing published yet · try {bold('hona publish page.html')}"); return
     w = max(len(m["slug"]) for m in items)
     for m in items:
-        print(f"{dim('├')} {bold(m['slug'].ljust(w))}  {dim(time.strftime('%b %d %H:%M', time.localtime(m['updated'])))}  {m['title']}")
+        n = len([x for x in get_comments(m["slug"]) if not x["parent"] and not x["resolved"]])
+        print(f"{dim('├')} {bold(m['slug'].ljust(w))}  {dim(time.strftime('%b %d %H:%M', time.localtime(m['updated'])))}  {m['title']}" + (f"  {yellow(f'💬 {n}')}" if n else ""))
     print(f"{dim('└')} {green('✔')} {len(items)} artifact(s) · index: {cyan(BASE)}")
 
+def need_slug(a):
+    s = slugify(a) if a else (all_meta() or [{}])[0].get("slug")
+    if not s or not meta(s): fail("no such artifact", "Run `hona list` to see slugs.")
+    return s
+
 def cmd_open(args):
-    banner("open"); slug = slugify(args[0]) if args else (all_meta() or [{}])[0].get("slug")
-    if not slug or not meta(slug): fail("no such artifact", "Run `hona list` to see slugs.")
+    banner("open"); slug = need_slug(args[0] if args else None)
     ensure_server(); open_browser(f"{BASE}/a/{slug}")
     print(f"{dim('└')} {green('✔')} opened {cyan(f'{BASE}/a/{slug}')}")
 
@@ -179,22 +310,101 @@ def cmd_rm(args):
     if not args or not meta(slugify(args[0])): fail("no such artifact", "Run `hona list` to see slugs.")
     shutil.rmtree(STORE / slugify(args[0])); print(f"{dim('└')} {green('✔')} removed {args[0]}")
 
+def cmd_comments(args):
+    """What the agent runs to read feedback. Default: new comments since last read. --wait blocks until one arrives."""
+    flags = {a for a in args if a.startswith("--") and not a[2:].isdigit()}
+    pos = [a for a in args if not a.startswith("--")]
+    slug = need_slug(pos[0] if pos else None)
+    timeout = 600
+    cur = STORE / slug / "agent_cursor.json"
+    def pending():
+        seen_id = read_json(cur, {"seen": 0})["seen"]
+        return [x for x in get_comments(slug) if x["author"] == "you" and x["id"] > seen_id]
+    start = time.time(); items = pending()
+    if "--wait" in flags:
+        while not items and time.time() - start < timeout: time.sleep(1); items = pending()
+    cs = get_comments(slug)
+    root = lambda x: next((r for r in cs if r["id"] == x["parent"]), x) if x["parent"] else x
+    show = [x for x in cs if not root(x)["resolved"] or x in items] if "--all" in flags else items
+    if items: write_json(cur, {"seen": max(x["id"] for x in items)})
+    if "--json" in flags: print(json.dumps(show, indent=1)); sys.exit(0 if show or "--wait" not in flags else 2)
+    if TTY: banner(f"comments · {slug}")
+    if not show:
+        print(f"{dim('└') if TTY else ''} {yellow('!') if TTY else ''} no new comments" + (" (timed out)" if "--wait" in flags else ""))
+        sys.exit(2 if "--wait" in flags else 0)
+    for x in show:
+        q = f' re: "{x["quote"][:80]}"' if x["quote"] else ""
+        par = f" (reply to #{x['parent']})" if x["parent"] else ""
+        print(f"{dim('├') if TTY else ''} #{x['id']} {bold(x['author'])}{par}{q}{' [resolved]' if x['resolved'] else ''}\n{dim('│') if TTY else ''}   {x['text']}")
+    if TTY: print(f"{dim('└')} {green('✔')} {len(show)} shown · reply: {bold(f'hona reply {slug} <id> \"text\"')}")
+
+def cmd_reply(args):
+    if len(args) < 3 or not args[1].isdigit(): fail("usage: hona reply <slug> <comment-id> <text>", "Find ids with `hona comments <slug> --all`.")
+    slug = need_slug(args[0]); add_comment(slug, "agent", " ".join(args[2:]), parent=int(args[1]))
+    banner("reply"); print(f"{dim('└')} {green('✔')} replied to #{args[1]}")
+
+def cmd_resolve(args):
+    if len(args) < 2 or not args[1].isdigit(): fail("usage: hona resolve <slug> <comment-id>", "")
+    slug = need_slug(args[0]); set_resolved(slug, int(args[1]), True)
+    banner("resolve"); print(f"{dim('└')} {green('✔')} resolved #{args[1]}")
+
+def cmd_data(args):
+    """hona data <slug> <collection> [get <id> | set <id> <json> | del <id>]  (no verb = list)"""
+    if len(args) < 2 or not ID_RE.match(args[1]): fail("usage: hona data <slug> <collection> [get|set|del ...]", "Collections use letters, digits, - and _.")
+    slug, coll, rest = need_slug(args[0]), args[1], args[2:]
+    if not rest: print(json.dumps(db_read(slug, coll), indent=1))
+    elif rest[0] == "get" and len(rest) == 2: print(json.dumps(db_read(slug, coll).get(rest[1]), indent=1))
+    elif rest[0] == "set" and len(rest) == 3 and ID_RE.match(rest[1]):
+        try: doc = json.loads(rest[2])
+        except Exception: fail("value is not valid JSON", "Quote it: hona data page items set a '{\"done\":true}'")
+        db_write(slug, coll, lambda d: d.__setitem__(rest[1], doc)); print(f"{green('✔') if TTY else 'ok'} set {rest[1]}")
+    elif rest[0] == "del" and len(rest) == 2: db_write(slug, coll, lambda d: d.pop(rest[1], None)); print(f"{green('✔') if TTY else 'ok'} deleted {rest[1]}")
+    else: fail("unknown data command", "Use: get <id> | set <id> <json> | del <id>")
+
+def cmd_lan(args):
+    banner("lan"); cfg = config(); mode = args[0] if args else "status"
+    if mode in ("on", "off"):
+        cfg["lan"] = mode == "on"
+        if cfg["lan"] and not cfg.get("token"): cfg["token"] = secrets.token_urlsafe(16)
+        save_config(cfg); step(1, 2, f"lan {mode}"); stop_server(); ensure_server(); step(2, 2, "server restarted")
+        print(dim("│"))
+    elif mode != "status": fail("usage: hona lan [on|off|status]", "")
+    row("lan", green("on") if cfg.get("lan") else dim("off · only this machine"))
+    if cfg.get("lan"):
+        row("url", cyan(lan_url() or "no network found")); row("access", dim("needs the ?t= token in the link; it becomes a cookie"))
+    print(f"{dim('└')} {green('✔')} done")
+
 def cmd_serve(_):
     STORE.mkdir(parents=True, exist_ok=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    host = "0.0.0.0" if config().get("lan") else "127.0.0.1"
+    class Srv(ThreadingHTTPServer):
+        daemon_threads = True
+        def server_bind(self):  # skip HTTPServer's getfqdn(): a slow reverse-DNS lookup on 0.0.0.0
+            socketserver.TCPServer.server_bind(self); self.server_name, self.server_port = host, PORT
+    srv = Srv((host, PORT), H)
+    PIDFILE.write_text(str(os.getpid()))  # only after a successful bind
+    srv.serve_forever()
 
 HELP = f"""{bold('hona')} {dim('· local artifacts')}
 
-  hona publish <file|-> [--title T] [--slug S] [--no-open]   publish & open
-  hona list                                                  show everything
-  hona open [slug]                                           open one (default: latest)
-  hona rm <slug>                                             delete one
-  hona serve                                                 run server in foreground
+  {bold('publish')} <file|-> [--title T] [--slug S] [--no-open]   publish & open (same title = update in place)
+  {bold('list')}                                                  everything, with open-comment counts
+  {bold('open')} [slug]                                           open one (default: latest)
+  {bold('rm')} <slug>                                             delete one
+
+  {bold('comments')} [slug] [--wait] [--all] [--json]             read feedback (--wait blocks until a new comment)
+  {bold('reply')} <slug> <id> <text>                              answer a comment (shows live in the page)
+  {bold('resolve')} <slug> <id>                                   mark a thread done
+
+  {bold('data')} <slug> <coll> [get <id>|set <id> <json>|del <id>]   shared data the page can also use (window.hona.db)
+  {bold('lan')} [on|off|status]                                   share on your network (token protected)
+  {bold('serve')}                                                 run server in foreground
 """
 
 if __name__ == "__main__":
     STORE.mkdir(parents=True, exist_ok=True)
-    cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve}
+    cmds = {"publish": cmd_publish, "list": cmd_list, "open": cmd_open, "rm": cmd_rm, "serve": cmd_serve, "comments": cmd_comments,
+            "reply": cmd_reply, "resolve": cmd_resolve, "data": cmd_data, "lan": cmd_lan}
     a = sys.argv[1:]
     if not a or a[0] not in cmds: print(HELP); sys.exit(0 if not a else 1)
     cmds[a[0]](a[1:])
