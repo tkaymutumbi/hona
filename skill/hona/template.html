@@ -5,87 +5,39 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Replace With A Short Name</title>
 <meta name="description" content="One sentence on what this page shows and what you need from the reader.">
-<link rel="stylesheet" href="/_/hona.css">
 <style>
-  /* Layout idea: one column, decision first, evidence below.
-     Colours and type come from hona.css tokens (--h-*), which already switch with the viewer's
-     light / dark / system choice. Add page-specific tokens here, defined on :root first, then
-     redefined under both dark selectors. Never hard-code a colour that only reads in one theme. */
-  :root { --accent-soft: color-mix(in srgb, var(--h-accent) 14%, var(--h-bg)); }
+  /* Blank canvas. Hona provides no components or look: design this page for its subject.
+     Replace every token below. Tokens are defined on :root (light), then redefined for dark under both
+     selectors, so the viewer's theme switch works. The body background must come from a token. */
+  :root {
+    --bg: #ffffff;
+    --surface: #f4f4f5;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #dddddd;
+    --accent: #2f5fd0;
+    --font: system-ui, sans-serif;
+    --gutter: 1rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #111111; --surface: #1c1c1e; --ink: #f2f2f2; --muted: #a0a0a0; --line: #333333; --accent: #7da2f5; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --bg: #111111; --surface: #1c1c1e; --ink: #f2f2f2; --muted: #a0a0a0; --line: #333333; --accent: #7da2f5; color-scheme: dark; }
 
-  .page { display: grid; gap: var(--h-8); }
-  .lede { font-size: var(--h-text-lg); max-width: 60ch; color: var(--h-text); text-wrap: pretty; }
-  .ask { background: var(--accent-soft); border: 1px solid var(--h-line); border-radius: var(--h-radius); padding: var(--h-4) var(--h-6); }
-  .ask strong { display: block; margin-bottom: var(--h-1); }
-  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--h-4); }
-  .options > * { min-width: 0; }
-  .scroll-x { overflow-x: auto; }              /* wide tables and code scroll inside their own box */
-  figure { margin: 0; display: grid; gap: var(--h-2); }
-  figure svg { width: 100%; max-width: 40rem; height: auto; }
-  figcaption { color: var(--h-muted); font-size: var(--h-text-sm); }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 2rem var(--gutter); background: var(--bg); color: var(--ink); font: 1rem/1.6 var(--font); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  .scroll-x { overflow-x: auto; }   /* wrap wide tables, code and frames so the page never scrolls sideways */
+
+  /* Option picks: any element with data-hona-choice="<group>" data-value="<v>" becomes clickable;
+     the pick reaches the agent as `choice: <group> = <v>`. Style it however the design needs. */
 </style>
 </head>
-<body class="h-page">
-<main class="page">
+<body>
 
-  <header class="h-stack">
-    <p class="h-eyebrow">proposal</p>
-    <h1>The thing you are deciding</h1>
-    <p class="lede">State the recommendation in one or two sentences. The reader should know what you want from them before they scroll.</p>
-  </header>
+  <h1>Replace With A Short Name</h1>
+  <p>Start from the subject, not from this file.</p>
 
-  <section class="ask" aria-label="What I need from you">
-    <strong>What I need from you</strong>
-    Approve this plan, or request changes. Pin or draw on anything that is unclear.
-  </section>
-
-  <!-- Options: the reader clicks one; the pick reaches the agent as `choice: approach = <value>`. -->
-  <section class="h-stack">
-    <h2>Pick an approach</h2>
-    <div class="options">
-      <div class="h-card h-option" data-hona-choice="approach" data-value="queue">
-        <strong>Queue the writes</strong>
-        <p>Slower to ship, never drops an order.</p>
-      </div>
-      <div class="h-card h-option" data-hona-choice="approach" data-value="direct">
-        <strong>Write directly</strong>
-        <p>Ships this week, needs a retry on failure.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- A diagram earns its place only when it shows a mechanism prose cannot: draw the path, label the arrows. -->
-  <section class="h-stack">
-    <h2>How a request flows</h2>
-    <figure>
-      <svg viewBox="0 0 520 120" role="img" aria-label="A request goes from the client to the API, which writes to the queue; a worker reads the queue and writes the database.">
-        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
-        <g fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="8" y="40" width="90" height="40" rx="8"/><rect x="215" y="40" width="90" height="40" rx="8"/><rect x="422" y="40" width="90" height="40" rx="8"/>
-          <line x1="98" y1="60" x2="213" y2="60" marker-end="url(#arrow)"/><line x1="305" y1="60" x2="420" y2="60" marker-end="url(#arrow)"/>
-        </g>
-        <g fill="currentColor" font-size="12" text-anchor="middle" font-family="inherit">
-          <text x="53" y="64">client</text><text x="260" y="64">queue</text><text x="467" y="64">worker</text>
-          <text x="156" y="52">POST /order</text><text x="363" y="52">polls every 2s</text>
-        </g>
-      </svg>
-      <figcaption>The API acknowledges once the order is queued; the worker writes the database later.</figcaption>
-    </figure>
-  </section>
-
-  <section class="h-stack">
-    <h2>Comparison</h2>
-    <div class="scroll-x">
-      <table>
-        <thead><tr><th>option</th><th>effort</th><th>risk</th><th>status</th></tr></thead>
-        <tbody>
-          <tr><td>Queue the writes</td><td>3 days</td><td>low</td><td><span class="h-badge ok">recommended</span></td></tr>
-          <tr><td>Write directly</td><td>1 day</td><td>medium</td><td><span class="h-badge warn">needs retries</span></td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-</main>
 </body>
 </html>

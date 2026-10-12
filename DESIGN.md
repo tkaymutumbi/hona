@@ -1,5 +1,8 @@
 # hona design system
 
+**Scope: this system styles hona's own screens only (the index, markdown pages, exports). Pages that agents publish do not use
+it; they are designed from scratch for their subject, and hona only adds its review tools on top.**
+
 Calm, warm ink, one ember accent, monospace chrome, readable prose. Source of truth: [`assets/hona.css`](assets/hona.css),
 served at `/_/hona.css`.
 

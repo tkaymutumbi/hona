@@ -68,8 +68,8 @@ The user can press **approve** or **request changes** (with a note) on a page. T
 
 ## Letting the user choose
 
-When you want the user to pick between options (logos, layouts, plans), make each option a card with
-`data-hona-choice="<group>" data-value="<A>"` (and the `h-option` class). They click one; the pick arrives as
+When you want the user to pick between options (logos, layouts, plans), make each option an element of your own design with
+`data-hona-choice="<group>" data-value="<A>"` (hona adds the selected state). They click one; the pick arrives as
 `choice: <group> = <value>` through `hona_wait_for_feedback` / `hona comments --wait`, or any time via `hona_choices` /
 `hona choices <slug>`. One group per question; use clear short values. Prefer this to asking them to type a letter.
 
@@ -88,8 +88,8 @@ Write prompts that carry everything needed (the selected text, the options) beca
 
 ## Writing good pages
 
-Start from `hona template > page.html`: it already follows everything below. Treat the page like a small product,
-not a text dump.
+Start from `hona template > page.html`: a blank canvas with only the theme plumbing, no components. Treat the page like
+a small product, not a text dump.
 
 **Before you publish**
 - `hona_publish` / `hona publish` renders the page at desktop and phone width in light and dark and reports sideways
@@ -104,8 +104,8 @@ not a text dump.
 - Complete at rest: everything meant to be read is visible on load, with no scroll-triggered reveal and no empty shell.
 - Structure encodes meaning: number steps only when the order matters; use eyebrows, dividers and badges only when they
   carry information. Do not number or decorate for rhythm.
-- **No emojis**, anywhere: not in the page, the title, the description, or your replies on the thread. Use words, plain
-  symbols and the design system's badges.
+- **No emojis**, anywhere: not in the page, the title, the description, or your replies on the thread. Use words and plain
+  symbols.
 - Write plainly for the reader, in active voice, naming things the way they would. Prefer specific to clever. Avoid
   mannered devices: asides set off by dashes, "not X but Y" framing, colon-then-reveal sentences, scare quotes around
   invented labels, stock phrases.
@@ -117,9 +117,12 @@ not a text dump.
 - Put the explanation in `description` (`--description`, or `<meta name="description">`): one sentence, shown under
   the name on the index.
 
-**Design**
-- Link the design system: `<link rel="stylesheet" href="/_/hona.css">`, `<body class="h-page">`. Components: `.h-card`,
-  `.h-badge` (`ok warn err`), `.h-btn`, `.h-eyebrow`, `.h-option`, `.h-stack`. It carries light, dark and system themes.
+**Design: hona gives you a blank canvas**
+- Hona has no design system for published pages and no built-in components. Do not link `/_/hona.css` and do not use
+  `h-*` classes. Every page is designed from scratch for its subject: its own palette, type, layout and components.
+  Hona only adds the review tools on top (comments, pins, drawing, approve, theme switch).
+- Order of precedence: the user's words, then the project's own design system (tokens, CSS, CLAUDE.md), then your
+  own choices. Never impose hona's look on someone's project.
 - Colours are tokens, defined once on `:root` (light), redefined under
   `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {...} }` and `:root[data-theme="dark"] {...}`
   with `color-scheme: dark`. The body gets an explicit background from a token. No literal colour that reads in only one
@@ -133,13 +136,15 @@ not a text dump.
   `prefers-reduced-motion`.
 - Repeated elements share edges, baselines and padding. Use cards sparingly: border, fill, radius and shadow mark an
   element as a separate object, so apply them by role, not to every block.
+- Fonts: Google Fonts may be linked if the page degrades to a real fallback stack offline; everything else is inline.
 - Avoid the stock AI look unless the user asks for it: warm cream with a serif and terracotta accent, near-black with
   one acid accent, purple-to-blue gradient heroes, Inter as the "safe" face, centred everything, rounded cards with
   an accent rail. When the user specifies a direction, follow it exactly; their words win.
 - Self-contained: inline CSS and JS, data URIs for images. External hosts fail offline and in exports. Avoid
   `alert`, `confirm` and `prompt`; build confirmations into the page.
-- Plan, memo and report pages get a restrained treatment (clear hierarchy, considered spacing); landing pages, games
-  and tools get a stronger point of view. When unsure, a well-composed plain page beats an over-designed one.
+- The page is yours to design, like an Artifact: a plan can be plain, a design review should be a full designed piece.
+  When the deliverable is a design, make the page itself rich and live (see the next section) and let the subject set
+  the look. Ordinary boxes, cards and pills are a choice, not a default; do not reach for them out of habit.
 
 **Diagrams** (inline `<svg>`, no libraries)
 - Draw a mechanism, not a labelled box: the path a request takes, the boundary being crossed, what one option adds or
@@ -153,6 +158,22 @@ not a text dump.
 - Pages can keep small shared state with `window.hona.db` (`list/get/set/del`; same data as `hona data <slug> <coll>`).
 - Republishing keeps the viewer's scroll position and form values, so you can iterate while they read.
 - Every page gets the hona favicon and the comment, pin, draw, review and theme tools automatically; do not add your own.
+
+## Design work and redesigns: use the canvas
+
+When asked to design or redesign something (an app, a screen, a flow, a brand), the page is the canvas and the design
+is the deliverable. Build the actual design, not a description of it:
+- Make the frames live, not screenshots: phones and windows the user can tap, scroll, filter and switch tabs in, built
+  with real HTML and a little script. Add your own Auto / Light / Dark switch when the design has both themes, and
+  show a "Picked: X" readout when a choice is made.
+- Render each screen or variant at its real size as its own frame (a phone frame at 390px, a desktop frame at 1280px),
+  laid out on the page side by side or in a grid so they can be compared and pinned. Use the project's real content,
+  names and data.
+- Use the product's own tokens and components when redesigning an existing app (read its CSS first). When there is no
+  system yet, define one inside the page and show it once (colours, type, spacing).
+- Put variants behind `data-hona-choice` so the user can pick, and ask for approval on the one to build.
+- Label each frame with a plain name ("Checkout, empty cart") so comments can point at it.
+- Write the same code the app would use where possible, so an approved frame can be lifted straight into the project.
 
 ## Rules
 

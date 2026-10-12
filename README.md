@@ -100,8 +100,8 @@ shows a text **diff** against the previous one, opens an old version read-only, 
 Mark any element as a choice and the user can pick it with a click (or Enter): 
 
 ```html
-<div class="h-card h-option" data-hona-choice="logo" data-value="A">Option A</div>
-<div class="h-card h-option" data-hona-choice="logo" data-value="B">Option B</div>
+<div data-hona-choice="logo" data-value="A">Option A</div>
+<div data-hona-choice="logo" data-value="B">Option B</div>
 ```
 
 The pick is outlined on the page, shown in the panel, and delivered to the agent (`hona choices <slug>`, `hona comments --wait`,
@@ -180,8 +180,8 @@ hona skill status      # check; `hona skill uninstall` removes the links
 The skill (which also tells agents to use no emojis in pages) is [`skill/hona/SKILL.md`](skill/hona/SKILL.md), a plain `SKILL.md`, so any agent that reads that format can
 use it. Restart the agent session after installing.
 
-Pages can opt into the [design system](DESIGN.md) with `<link rel="stylesheet" href="/_/hona.css">`
-and `<body class="h-page">`. Every page automatically gets the hona favicon unless it sets its own.
+Published pages are a blank canvas: agents design each one from scratch, with no built-in components. The
+[design system](DESIGN.md) styles only hona's own screens. Every page automatically gets the hona favicon unless it sets its own.
 
 ## License
 

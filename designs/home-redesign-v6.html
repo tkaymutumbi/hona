@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hona Home Redesign</title>
+<meta name="description" content="Three live phone layouts for hona's home screen, using your real published pages. Tap through each one, then pick.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a review desk. Big serif title, theme switch top right, three live phones, picked readout. */
+  :root {
+    --desk: #e9edf0;
+    --desk-2: #f6efe9;
+    --desk-ink: #121a1f;
+    --desk-muted: #55636b;
+    --bezel: #10161a;
+    --screen: #f4f6f7;
+    --glass: rgba(255,255,255,.72);
+    --ink: #121a1f;
+    --muted: #5d6a72;
+    --hair: rgba(18,26,31,.1);
+    --teal: #0f766e;
+    --teal-ink: #ffffff;
+    --teal-soft: #d4efea;
+    --amber: #9a4607;
+    --amber-soft: #fde8c8;
+    --hot: #ff5a36;
+    --hot-ink: #1b0a05;
+    --hot-2: #ff8a6e;
+    --lime: #d7f25a;
+    --lime-ink: #121a05;
+    --deep: #0e3b34;
+    --deep-ink: #eaf5f1;
+    --sky: #bcd8f2;
+    --sky-ink: #0c1a28;
+    --serif: "Fraunces", Georgia, serif;
+    --display: "Bricolage Grotesque", system-ui, sans-serif;
+    --body: "Hanken Grotesk", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --desk: #0b1013; --desk-2: #17110f; --desk-ink: #e9f0f3; --desk-muted: #8d9ca4;
+      --bezel: #2a343a; --screen: #11181b; --glass: rgba(24,32,36,.74);
+      --ink: #e9f0f3; --muted: #93a2aa; --hair: rgba(233,240,243,.12);
+      --teal: #4fc9b9; --teal-ink: #07211d; --teal-soft: #15332f; --amber: #f0b35c; --amber-soft: #3a2a12;
+      --hot: #ff7a5a; --hot-2: #ff9a82; --lime: #c9e44f; --deep: #1a5a50; --sky: #2b4a66; --sky-ink: #e6f1fb;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --desk: #0b1013; --desk-2: #17110f; --desk-ink: #e9f0f3; --desk-muted: #8d9ca4;
+    --bezel: #2a343a; --screen: #11181b; --glass: rgba(24,32,36,.74);
+    --ink: #e9f0f3; --muted: #93a2aa; --hair: rgba(233,240,243,.12);
+    --teal: #4fc9b9; --teal-ink: #07211d; --teal-soft: #15332f; --amber: #f0b35c; --amber-soft: #3a2a12;
+    --hot: #ff7a5a; --hot-2: #ff9a82; --lime: #c9e44f; --deep: #1a5a50; --sky: #2b4a66; --sky-ink: #e6f1fb;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 3rem 1rem 5rem; background: linear-gradient(160deg, var(--desk), var(--desk-2)); background-color: var(--desk); color: var(--desk-ink); font: 1rem/1.55 var(--body); min-height: 100vh; }
+  :focus-visible { outline: 3px solid var(--hot); outline-offset: 2px; }
+  .desk { max-width: 1240px; margin: 0 auto; display: grid; gap: 2.5rem; }
+  .desk > * { min-width: 0; }
+  .top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 1.5rem; }
+  h1 { font: 500 clamp(2.5rem, 6.5vw, 4.5rem)/1 var(--serif); letter-spacing: -0.03em; margin: 0; text-wrap: balance; }
+  h1 em { color: var(--teal); }
+  .lede { max-width: 58ch; color: var(--desk-muted); margin: 1.1rem 0 0; font-size: 1.0625rem; }
+  .side { display: grid; gap: 0.75rem; justify-items: end; }
+  .seg { display: inline-flex; background: var(--glass); border-radius: 999px; padding: 0.3rem; }
+  .seg button { font: 500 0.9375rem/1 var(--body); color: var(--desk-muted); background: none; border: 0; padding: 0.65rem 1.1rem; border-radius: 999px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--desk-ink); color: var(--desk); }
+  .picked { font: 500 0.8125rem/1 ui-monospace, Menlo, monospace; color: var(--desk-muted); }
+
+  .phones { display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 2rem 1.5rem; justify-items: center; }
+  .unit { display: grid; gap: 0.9rem; justify-items: center; }
+  .label { text-align: center; max-width: 34ch; }
+  .label b { font: 700 1.125rem/1.2 var(--display); letter-spacing: -0.02em; display: block; }
+  .label span { color: var(--desk-muted); font-size: 0.9375rem; }
+  .use { font: 600 0.9375rem/1 var(--body); padding: 0.75rem 1.3rem; border-radius: 999px; border: 0; cursor: pointer; background: var(--glass); color: var(--desk-ink); }
+  .use[aria-pressed="true"] { background: var(--teal); color: var(--teal-ink); }
+
+  /* device */
+  .phone { width: 366px; height: 740px; flex: none; background: var(--bezel); border-radius: 54px; padding: 11px; position: relative; }
+  .screen { position: relative; width: 100%; height: 100%; background: var(--screen); border-radius: 44px; overflow: hidden; color: var(--ink); }
+  .status { position: absolute; z-index: 5; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 14px 28px 0; font: 600 0.8125rem/1 var(--body); pointer-events: none; }
+  .scroll { position: absolute; inset: 0; overflow-y: auto; padding: 5.2rem 0 1.5rem; scrollbar-width: none; }
+  .scroll::-webkit-scrollbar { display: none; }
+  .float { position: absolute; z-index: 4; top: 40px; left: 12px; right: 12px; height: 54px; border-radius: 27px; background: var(--glass); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4); display: flex; align-items: center; justify-content: space-between; padding: 0 1.1rem; }
+  .word { font: 800 1.25rem/1 var(--display); letter-spacing: -0.04em; }
+  .word::after { content: "."; color: var(--hot); }
+  .float small { font: 500 0.8125rem/1 var(--body); color: var(--muted); }
+  .back { background: none; border: 0; color: var(--ink); font: 600 0.9375rem/1 var(--body); cursor: pointer; padding: 0.4rem 0; }
+
+  /* shared text */
+  .hd { font: 500 2.1rem/1.02 var(--serif); letter-spacing: -0.03em; margin: 0 1.25rem 1rem; text-wrap: balance; }
+  .hd em { color: var(--teal); }
+  .chips { display: flex; gap: 0.5rem; padding: 0 1.25rem 1rem; overflow-x: auto; scrollbar-width: none; }
+  .chips button { flex: none; font: 600 0.9375rem/1 var(--body); padding: 0.7rem 1.05rem; border-radius: 999px; border: 0; background: var(--hair); color: var(--muted); cursor: pointer; }
+  .chips button[aria-pressed="true"] { background: var(--teal); color: var(--teal-ink); }
+  .eyebrow { font: 600 0.6875rem/1 var(--body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 0 1.25rem; margin: 1.25rem 0 0.4rem; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; width: 100%; text-align: left; background: none; border: 0; color: inherit; padding: 0.7rem 1.25rem; cursor: pointer; font: inherit; }
+  .row .nm { font: 500 1.2rem/1.15 var(--display); letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
+  .row .tm { font: 400 0.8125rem/1 var(--body); color: var(--muted); flex: none; }
+  .row:active { background: var(--hair); }
+
+  /* A: index bands */
+  .band { display: grid; grid-template-columns: 1fr auto; gap: 0.2rem 1rem; align-items: center; width: 100%; border: 0; text-align: left; padding: 1rem 1.25rem; background: var(--hot); color: var(--hot-ink); cursor: pointer; font: inherit; }
+  .band:nth-of-type(2n) { background: var(--hot-2); }
+  .band .nm { font: 700 1.3rem/1.1 var(--display); letter-spacing: -0.025em; overflow-wrap: anywhere; }
+  .band .sb { font: 400 0.8125rem/1.2 var(--body); grid-column: 1; }
+  .band .n { grid-column: 2; grid-row: 1 / span 2; font: 800 2.4rem/1 var(--display); letter-spacing: -0.04em; text-align: right; }
+  .band .n small { display: block; font: 600 0.6875rem/1 var(--body); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 0.2rem; }
+
+  /* B: wall */
+  .wall { display: grid; grid-template-columns: 1fr 1fr; }
+  .field { min-height: 150px; padding: 0.9rem 1rem; display: flex; flex-direction: column; justify-content: space-between; text-align: left; border: 0; cursor: pointer; font: inherit; }
+  .field.big { grid-column: span 2; min-height: 230px; }
+  .field .nm { font: 700 1.2rem/1.05 var(--display); letter-spacing: -0.03em; overflow-wrap: anywhere; }
+  .field.big .nm { font-size: 2.1rem; line-height: .98; font-weight: 800; }
+  .field .mt { display: flex; justify-content: space-between; font: 600 0.75rem/1 var(--body); }
+  .k0 { background: var(--hot); color: var(--hot-ink); } .k1 { background: var(--lime); color: var(--lime-ink); }
+  .k2 { background: var(--deep); color: var(--deep-ink); } .k3 { background: var(--sky); color: var(--sky-ink); } .k4 { background: var(--ink); color: var(--screen); }
+
+  /* C: soft glass list with filters */
+  .glassrow { display: grid; grid-template-columns: 2.6rem 1fr; gap: 0.2rem 0.85rem; align-items: center; width: calc(100% - 2rem); margin: 0 1rem 0.65rem; padding: 0.9rem; border: 0; border-radius: 22px; background: var(--glass); text-align: left; cursor: pointer; color: inherit; font: inherit; box-shadow: 0 6px 24px -14px rgba(0,0,0,.35); }
+  .dot { grid-row: 1 / span 2; width: 2.6rem; height: 2.6rem; border-radius: 14px; display: grid; place-items: center; font: 700 1.05rem/1 var(--display); background: var(--teal-soft); color: var(--teal); }
+  .dot.w { background: var(--amber-soft); color: var(--amber); }
+  .glassrow .nm { font: 600 1rem/1.2 var(--body); overflow-wrap: anywhere; }
+  .glassrow .sb { font: 500 0.75rem/1.2 var(--body); color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+
+  /* detail view, shared */
+  .detail { padding: 0 1.25rem; }
+  .detail h2 { font: 500 2rem/1.05 var(--serif); letter-spacing: -0.03em; margin: 0.5rem 0 0.4rem; }
+  .detail .sl { font: 500 0.8125rem/1.3 ui-monospace, Menlo, monospace; color: var(--muted); }
+  .cm { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--hair); }
+  .cm p { margin: 0 0 0.3rem; }
+  .cm small { color: var(--muted); }
+  .empty { color: var(--muted); }
+
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.75rem; }
+  .notes h3 { font: 700 1.0625rem/1.2 var(--display); margin: 0; }
+  .notes p { margin: 0.35rem 0 0; color: var(--desk-muted); }
+  @media (max-width: 420px) { .phones { grid-template-columns: 1fr; } .phone { transform-origin: top center; } }
+</style>
+</head>
+<body>
+<main class="desk">
+
+  <header class="top">
+    <div>
+      <h1>Hona <em>home</em></h1>
+      <p class="lede">Three layouts for the screen you land on when you open hona, using your real published pages and comment counts. Every phone is live: scroll it, tap a filter, open a page, then pick the one to build.</p>
+    </div>
+    <div class="side">
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" data-th="auto" aria-pressed="true">Auto</button>
+        <button type="button" data-th="light" aria-pressed="false">Light</button>
+        <button type="button" data-th="dark" aria-pressed="false">Dark</button>
+      </div>
+      <span class="picked" id="picked">Picked: none yet</span>
+    </div>
+  </header>
+
+  <section class="phones" aria-label="Layouts">
+    <div class="unit">
+      <div class="phone"><div class="screen" id="pa"><div class="status"><span>9:41</span><span>5G</span></div></div></div>
+      <div class="label"><b>A. Index</b><span>Says how many pages wait on you, and runs them as colour bands.</span></div>
+      <button class="use" type="button" data-hona-choice="home" data-value="A" aria-pressed="false">Use A</button>
+    </div>
+    <div class="unit">
+      <div class="phone"><div class="screen" id="pb"><div class="status"><span>9:41</span><span>5G</span></div></div></div>
+      <div class="label"><b>B. Wall</b><span>Flat colour fields. The page with the most feedback is biggest.</span></div>
+      <button class="use" type="button" data-hona-choice="home" data-value="B" aria-pressed="false">Use B</button>
+    </div>
+    <div class="unit">
+      <div class="phone"><div class="screen" id="pc"><div class="status"><span>9:41</span><span>5G</span></div></div></div>
+      <div class="label"><b>C. Filtered list</b><span>Frosted rows with filter chips for Waiting, Approved and Pinned.</span></div>
+      <button class="use" type="button" data-hona-choice="home" data-value="C" aria-pressed="false">Use C</button>
+    </div>
+  </section>
+
+  <section class="notes" aria-label="Notes">
+    <div><h3>Real content</h3><p>Pages, versions, times and comment counts are the 11 pages published in your hona today.</p></div>
+    <div><h3>Not drawn yet</h3><p>Pin, remove and trash. They fit as a long-press menu on any row in all three.</p></div>
+    <div><h3>Desktop</h3><p>Say the word and I will draw the wide layout for whichever phone you pick.</p></div>
+  </section>
+
+</main>
+
+<script>
+  const pages = [
+    { t: "Hona vs Artifact Design", s: "hona-vs-artifact-design", v: 4, w: "10:20", n: 2, pin: true, c: ["Make this pink, and in Mandarin.", "Add a sketched background, kid styled."] },
+    { t: "How Hona Works", s: "how-hona-works", v: 4, w: "01:23", n: 4, c: ["Four open comments on this page."] },
+    { t: "Hona playground", s: "hona-playground", v: 1, w: "00:38", n: 4, c: ["Four open comments on this page."] },
+    { t: "Pouch Mobile Designs", s: "pouch-mobile-designs", v: 2, w: "01:07", n: 1, c: ["One open comment on this page."] },
+    { t: "Docs cleanup, dead and stale", s: "docs-cleanup-dead-and-stale", v: 1, w: "00:48", n: 1, c: ["One open comment on this page."] },
+    { t: "Hona Landing Concepts", s: "hona-landing-concepts", v: 2, w: "01:26", n: 0, c: [] },
+    { t: "Sekiwa Home B Signal Lost", s: "sekiwa-home-b-signal-lost", v: 1, w: "00:54", n: 0, c: [] },
+    { t: "Hona design", s: "hona-design", v: 1, w: "00:13", n: 0, c: [] },
+    { t: "Hona hello", s: "hona-hello", v: 1, w: "00:10", n: 0, c: [] },
+    { t: "Hona logo options", s: "hona-logo-options", v: 1, w: "00:06", n: 0, c: [] },
+    { t: "Hello", s: "hello", v: 1, w: "00:04", n: 0, c: [] }
+  ];
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const waiting = pages.filter((p) => p.n).sort((a, b) => b.n - a.n);
+  const quiet = pages.filter((p) => !p.n);
+  const cm = (n) => n + (n === 1 ? " comment" : " comments");
+
+  /* each phone: a screen with a floating glass header and one scroll area; open(i) shows a detail view */
+  function phone(id, home, headLeft) {
+    const root = document.getElementById(id);
+    const float = document.createElement("div"); float.className = "float";
+    const sc = document.createElement("div"); sc.className = "scroll";
+    root.append(sc, float);
+    const state = { page: null, filter: "all" };
+    const draw = () => {
+      if (state.page == null) {
+        float.innerHTML = headLeft;
+        sc.innerHTML = home(state);
+      } else {
+        const p = pages[state.page];
+        float.innerHTML = '<button class="back" type="button" data-back>‹ Back</button><small>v' + p.v + "</small>";
+        sc.innerHTML = '<div class="detail"><h2>' + esc(p.t) + '</h2><div class="sl">' + p.s + " · Oct 12, " + p.w + "</div>" +
+          '<div class="cm"><b>' + (p.n ? cm(p.n) : "No open comments") + "</b>" +
+          (p.c.length ? p.c.map((x) => "<p>" + esc(x) + "</p>").join("") : '<p class="empty">Nothing is waiting on this page.</p>') + "</div></div>";
+      }
+      sc.scrollTop = 0;
+    };
+    root.addEventListener("click", (e) => {
+      const o = e.target.closest("[data-open]"), b = e.target.closest("[data-back]"), f = e.target.closest("[data-filter]");
+      if (o) { state.page = +o.dataset.open; draw(); }
+      else if (b) { state.page = null; draw(); }
+      else if (f) { state.filter = f.dataset.filter; draw(); }
+    });
+    draw();
+  }
+  const idx = (p) => pages.indexOf(p);
+
+  phone("pa", () =>
+    '<h2 class="hd"><em>' + waiting.length + " pages</em> are waiting on you.</h2>" +
+    waiting.map((p) => '<button class="band" type="button" data-open="' + idx(p) + '"><span class="nm">' + esc(p.t) + '</span><span class="n">' + p.n + "<small>" + (p.n === 1 ? "comment" : "comments") + '</small></span><span class="sb">v' + p.v + " · Oct 12, " + p.w + "</span></button>").join("") +
+    '<div class="eyebrow">Everything else</div>' +
+    quiet.map((p) => '<button class="row" type="button" data-open="' + idx(p) + '"><span class="nm">' + esc(p.t) + '</span><span class="tm">' + p.w + "</span></button>").join(""),
+    '<span class="word">hona</span><small>11 pages</small>');
+
+  phone("pb", () =>
+    '<div class="wall">' + pages.slice(0, 9).map((p, i) =>
+      '<button class="field k' + (i % 5) + (i === 0 || i === 1 ? " big" : "") + '" type="button" data-open="' + idx(p) + '"><span class="nm">' + esc(p.t) + '</span><span class="mt"><span>' + (p.n ? p.n + " open" : "v" + p.v) + "</span><span>" + p.w + "</span></span></button>").join("") + "</div>",
+    '<span class="word">hona</span><small>11 pages</small>');
+
+  phone("pc", (st) => {
+    const list = pages.filter((p) => st.filter === "all" || (st.filter === "waiting" && p.n) || (st.filter === "pinned" && p.pin) || (st.filter === "approved" && false));
+    const chip = (k, label) => '<button type="button" data-filter="' + k + '" aria-pressed="' + (st.filter === k) + '">' + label + "</button>";
+    return '<h2 class="hd">Your <em>pages</em></h2>' +
+      '<div class="chips">' + chip("all", "All 11") + chip("waiting", "Waiting " + waiting.length) + chip("approved", "Approved 0") + chip("pinned", "Pinned 1") + "</div>" +
+      (list.length ? list.map((p) => '<button class="glassrow" type="button" data-open="' + idx(p) + '"><span class="dot' + (p.n ? " w" : "") + '">' + (p.n || p.v) + '</span><span class="nm">' + esc(p.t) + '</span><span class="sb">' + (p.n ? cm(p.n) : "v" + p.v) + " · " + p.w + "</span></button>").join("") : '<p class="eyebrow" style="text-transform:none;letter-spacing:0;font-size:.9375rem">No pages are approved yet.</p>');
+  }, '<span class="word">hona</span><small>search</small>');
+
+  /* theme switch and pick readout */
+  const root = document.documentElement;
+  const setTheme = (t) => {
+    if (t === "auto") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", t);
+    document.querySelectorAll("[data-th]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.th === t)));
+  };
+  document.querySelectorAll("[data-th]").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.th)));
+  document.querySelectorAll(".use").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".use").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    document.getElementById("picked").textContent = "Picked: " + b.dataset.value;
+  }));
+</script>
+</body>
+</html>
